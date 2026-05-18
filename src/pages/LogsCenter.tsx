@@ -12,6 +12,7 @@ import {
   FireOutlined,
   FlagOutlined,
   ReloadOutlined,
+  RightOutlined,
   SearchOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
@@ -332,25 +333,32 @@ const LogsCenter: React.FC = () => {
   }, [logs]);
 
   const summary24h = React.useMemo(() => {
-    const now = dayjs();
-    const curStart = now.subtract(24, 'hour').unix();
-    const prevStart = now.subtract(48, 'hour').unix();
+    const [start, end] = timeWindow;
+    const duration = Math.max(end - start, 1);
+    const prevStart = start - duration;
+    const bucketSize = Math.max(1, Math.floor(duration / 8));
 
-    const cur = logs.filter((l) => l.timestamp >= curStart);
-    const prev = logs.filter((l) => l.timestamp >= prevStart && l.timestamp < curStart);
+    const cur = scopedLogs;
+    const prev = logs.filter((l) => l.timestamp >= prevStart && l.timestamp < start && l.timestamp > 0);
 
     const metric = (predicate: (l: LogRecord) => boolean) => {
       const current = cur.filter(predicate).length;
       const previous = prev.filter(predicate).length;
+      const hasPrev = previous > 0;
       const up = current >= previous;
-      const trend = previous === 0 ? 100 : Math.round(((current - previous) / previous) * 100);
+      const trend = hasPrev ? Math.round(((current - previous) / previous) * 100) : null;
       const sparkline = Array.from({ length: 8 }, (_, i) => {
-        const end = now.subtract(i * 3, 'hour').unix();
-        const start = now.subtract(i * 3 + 3, 'hour').unix();
-        return logs.filter((l) => l.timestamp >= start && l.timestamp < end && predicate(l)).length;
-      }).reverse();
-      return { current, previous, up, trend, sparkline };
+        const bStart = start + i * bucketSize;
+        const bEnd = bStart + bucketSize;
+        return cur.filter((l) => l.timestamp >= bStart && l.timestamp < bEnd && predicate(l)).length;
+      });
+      return { current, previous, up, trend, hasPrev, sparkline };
     };
+
+    // Affected gateways: count distinct gateways with non-info severity
+    const affGwCur = new Set(cur.filter((l) => l.severity !== 'info').map((l) => l.gateway)).size;
+    const affGwPrev = new Set(prev.filter((l) => l.severity !== 'info').map((l) => l.gateway)).size;
+    const hasPrevGw = affGwPrev > 0;
 
     return {
       total: metric(() => true),
@@ -360,14 +368,25 @@ const LogsCenter: React.FC = () => {
       info: metric((l) => l.severity === 'info'),
       activeAlarms: metric((l) => l.type === 'Alarm' && l.status === 'active'),
       offlineDevices: metric((l) => l.summary.toLowerCase().includes('heartbeat missing')),
-      affectedGateways: metric((l) => l.severity !== 'info'),
+      affectedGateways: {
+        current: affGwCur,
+        previous: affGwPrev,
+        up: affGwCur >= affGwPrev,
+        hasPrev: hasPrevGw,
+        trend: hasPrevGw ? Math.round(((affGwCur - affGwPrev) / affGwPrev) * 100) : null,
+        sparkline: Array.from({ length: 8 }, (_, i) => {
+          const bStart = start + i * bucketSize;
+          const bEnd = bStart + bucketSize;
+          return new Set(cur.filter((l) => l.timestamp >= bStart && l.timestamp < bEnd && l.severity !== 'info').map((l) => l.gateway)).size;
+        }),
+      },
     };
-  }, [logs]);
+  }, [scopedLogs, logs, timeWindow]);
 
   const volumeTrend = React.useMemo(() => {
     const [start] = timeWindow;
     const buckets = new Map<string, number>();
-    scopedLogs.forEach((log) => {
+    scopedLogs.filter((log) => log.timestamp > 0 && !isNaN(log.timestamp)).forEach((log) => {
       const label = dayjs.unix(log.timestamp).format('MM-DD HH:00');
       buckets.set(label, (buckets.get(label) || 0) + 1);
     });
@@ -377,19 +396,19 @@ const LogsCenter: React.FC = () => {
         buckets.set(label, 0);
       }
     }
-    return Array.from(buckets.entries()).map(([time, value]) => ({ time, value }));
+    return Array.from(buckets.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([time, value]) => ({ time, value }));
   }, [scopedLogs, timeWindow]);
 
   const errorAlarmTrend = React.useMemo(() => {
     const bucket = new Map<string, { Error: number; Alarm: number }>();
-    scopedLogs.forEach((l) => {
+    scopedLogs.filter((l) => l.timestamp > 0 && !isNaN(l.timestamp)).forEach((l) => {
       const key = dayjs.unix(l.timestamp).format('MM-DD HH:00');
       const entry = bucket.get(key) || { Error: 0, Alarm: 0 };
       if (l.severity === 'critical' || l.severity === 'error') entry.Error += 1;
       if (l.type === 'Alarm') entry.Alarm += 1;
       bucket.set(key, entry);
     });
-    return Array.from(bucket.entries()).flatMap(([time, val]) => ([
+    return Array.from(bucket.entries()).sort(([a], [b]) => a.localeCompare(b)).flatMap(([time, val]) => ([
       { time, metric: 'Error', value: val.Error },
       { time, metric: 'Alarm', value: val.Alarm },
     ]));
@@ -403,8 +422,8 @@ const LogsCenter: React.FC = () => {
 
   const topSources = React.useMemo(() => {
     const bySource = new Map<string, number>();
-    scopedLogs.forEach((l) => {
-      const src = `${l.gateway} / ${l.device}`;
+    scopedLogs.filter((l) => l.severity !== 'info').forEach((l) => {
+      const src = l.gateway + (l.device && l.device !== '\u2013' ? ` / ${l.device}` : '');
       bySource.set(src, (bySource.get(src) || 0) + 1);
     });
     return Array.from(bySource.entries())
@@ -417,15 +436,25 @@ const LogsCenter: React.FC = () => {
     {
       title: 'Timestamp',
       dataIndex: 'timestamp',
-      width: 168,
+      width: 152,
       sorter: (a, b) => a.timestamp - b.timestamp,
-      render: (ts: number) => dayjs.unix(ts).format('YYYY-MM-DD HH:mm:ss'),
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+      render: (ts: number) => (
+        <span style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+          {dayjs.unix(ts).format('YYYY-MM-DD HH:mm:ss')}
+        </span>
+      ),
     },
     {
       title: 'Severity',
       dataIndex: 'severity',
-      width: 108,
-      render: (sev: Severity) => <Tag color={severityColors[sev]}>{sev.toUpperCase()}</Tag>,
+      width: 96,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+      render: (sev: Severity) => (
+        <Tag color={severityColors[sev]} style={{ margin: 0, fontSize: 11 }}>
+          {sev === 'critical' ? 'CRIT' : sev.toUpperCase()}
+        </Tag>
+      ),
       filters: [
         { text: 'Critical', value: 'critical' },
         { text: 'Error', value: 'error' },
@@ -434,39 +463,78 @@ const LogsCenter: React.FC = () => {
       ],
       onFilter: (value, record) => record.severity === value,
     },
-    { title: 'Type', dataIndex: 'type', width: 132 },
-    { title: 'Site', dataIndex: 'site', width: 180, render: (v: string) => <Button type="link" size="small">{v}</Button> },
     {
-      title: 'Gateway',
-      dataIndex: 'gateway',
-      width: 128,
-      render: (v: string) => <Button type="link" size="small" onClick={(e) => { e.stopPropagation(); navigate('/realtime'); }}>{v}</Button>,
+      title: 'Type',
+      dataIndex: 'type',
+      width: 130,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+      render: (v: string) => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>,
     },
     {
-      title: 'Device',
-      dataIndex: 'device',
-      width: 138,
-      render: (v: string) => <Button type="link" size="small" onClick={(e) => { e.stopPropagation(); navigate('/devices'); }}>{v}</Button>,
+      title: 'Source',
+      width: 200,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+      render: (_: unknown, row: GroupedLogRecord) => (
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block', maxWidth: 196 }}>
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0, height: 'auto', fontSize: 13 }}
+            onClick={(e) => { e.stopPropagation(); navigate('/realtime'); }}
+          >
+            {row.gateway}
+          </Button>
+          {row.device && row.device !== '–' && (
+            <span style={{ color: '#9ca3af', fontSize: 12 }}>
+              {' / '}
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0, height: 'auto', fontSize: 12, color: '#9ca3af' }}
+                onClick={(e) => { e.stopPropagation(); navigate('/devices'); }}
+              >
+                {row.device}
+              </Button>
+            </span>
+          )}
+        </span>
+      ),
     },
-    { title: 'Summary Message', dataIndex: 'summary', ellipsis: true },
+    {
+      title: 'Summary Message',
+      dataIndex: 'summary',
+      ellipsis: true,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+    },
     {
       title: 'Status',
       dataIndex: 'status',
-      width: 132,
+      width: 90,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
       render: (status: LogStatus) => (
-        <Tag color={status === 'active' ? 'red' : status === 'acknowledged' ? 'gold' : 'green'}>
+        <Tag
+          color={status === 'active' ? 'red' : status === 'acknowledged' ? 'gold' : 'green'}
+          style={{ margin: 0, fontSize: 11 }}
+        >
           {status === 'active' ? 'Active' : status === 'acknowledged' ? 'Ack' : 'Cleared'}
         </Tag>
       ),
     },
-    { title: 'Count', dataIndex: 'count', width: 80, sorter: (a, b) => a.count - b.count },
     {
-      title: 'Pin',
-      width: 74,
+      title: '#',
+      dataIndex: 'count',
+      width: 52,
+      sorter: (a, b) => a.count - b.count,
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+    },
+    {
+      title: <FlagOutlined style={{ color: '#9ca3af' }} />,
+      width: 44,
       render: (_, row) => (
         <Button
           type="text"
-          icon={<FlagOutlined style={{ color: row.pinned ? '#d97706' : '#9ca3af' }} />}
+          size="small"
+          icon={<FlagOutlined style={{ color: row.pinned ? '#d97706' : '#d1d5db' }} />}
           onClick={(e) => {
             e.stopPropagation();
             setLogs((prev) => prev.map((item) => (item.id === row.id ? { ...item, pinned: !item.pinned } : item)));
@@ -533,6 +601,36 @@ const LogsCenter: React.FC = () => {
     message.success(`Log marked as ${status}`);
   };
 
+  const goToListWithFilter = React.useCallback((overrides: Partial<Filters>) => {
+    setFilters((prev) => ({
+      time: prev.time,
+      customRange: prev.customRange,
+      keyword: '',
+      messageId: '',
+      topic: '',
+      site: undefined,
+      gateway: undefined,
+      device: undefined,
+      type: undefined,
+      severity: undefined,
+      status: undefined,
+      module: undefined,
+      chips: { activeAlarms: false, offlineDevices: false, communicationErrors: false, unacknowledged: false, last1Hour: false },
+      ...overrides,
+    }));
+    navigate('/log/list');
+  }, [navigate]);
+
+  const recentErrors = React.useMemo(() =>
+    scopedLogs
+      .filter((l) => l.severity === 'critical' || l.severity === 'error')
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 6),
+    [scopedLogs]
+  );
+
+  const timeLabel = filters.time === '1h' ? '1h' : filters.time === '7d' ? '7d' : '24h';
+
   return (
     <div className="logs-center-page">
       <DevStatusModal
@@ -544,79 +642,179 @@ const LogsCenter: React.FC = () => {
         ]}
       />
       {subView === 'overview' && (
-        <Row gutter={[12, 12]} className="logs-summary-grid">
-          {[
-            { label: 'Total Logs (24h)', icon: <BarChartOutlined />, metric: summary24h.total },
-            { label: 'Critical', icon: <AlertOutlined />, metric: summary24h.critical },
-            { label: 'Error', icon: <FireOutlined />, metric: summary24h.error },
-            { label: 'Warning', icon: <WarningOutlined />, metric: summary24h.warning },
-            { label: 'Info', icon: <CheckCircleOutlined />, metric: summary24h.info },
-            { label: 'Active Alarms', icon: <AlertOutlined />, metric: summary24h.activeAlarms },
-            { label: 'Offline Devices', icon: <DisconnectOutlined />, metric: summary24h.offlineDevices },
-            { label: 'Affected Gateways', icon: <ClusterOutlined />, metric: summary24h.affectedGateways },
-          ].map((item) => (
-            <Col xs={24} sm={12} lg={6} xl={6} key={item.label}>
-              <Card className="logs-summary-card" bordered={false}>
-                <div className="logs-summary-head">
-                  <span className="logs-summary-icon">{item.icon}</span>
-                  <Text className="logs-summary-label">{item.label}</Text>
-                </div>
-                <div className="logs-summary-value">{item.metric.current}</div>
-                <div className="logs-summary-trend">
-                  <Text type={item.metric.up ? 'success' : 'danger'}>{item.metric.up ? '↑' : '↓'} {Math.abs(item.metric.trend)}%</Text>
-                  <MiniSparkline points={item.metric.sparkline} up={item.metric.up} />
-                </div>
+        <>
+          {/* ── Time range selector ── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>Time range:</Text>
+            <Segmented
+              size="small"
+              options={[
+                { label: 'Last 1h', value: '1h' },
+                { label: 'Last 24h', value: '24h' },
+                { label: 'Last 7d', value: '7d' },
+              ]}
+              value={filters.time === 'custom' ? '24h' : filters.time}
+              onChange={(v) => setFilters((prev) => ({ ...prev, time: v as TimeKey }))}
+            />
+            <Button icon={<ReloadOutlined />} size="small" loading={loading} onClick={fetchLogs}>Refresh</Button>
+          </div>
+
+          {/* ── Summary cards ── */}
+          <Row gutter={[10, 10]} className="logs-summary-grid">
+            {[
+              { label: `Total (${timeLabel})`, icon: <BarChartOutlined />, metric: summary24h.total, onClick: () => goToListWithFilter({}) },
+              { label: 'Critical', icon: <AlertOutlined />, metric: summary24h.critical, onClick: () => goToListWithFilter({ severity: 'critical' as Severity }) },
+              { label: 'Error', icon: <FireOutlined />, metric: summary24h.error, onClick: () => goToListWithFilter({ severity: 'error' as Severity }) },
+              { label: 'Warning', icon: <WarningOutlined />, metric: summary24h.warning, onClick: () => goToListWithFilter({ severity: 'warning' as Severity }) },
+              { label: 'Info', icon: <CheckCircleOutlined />, metric: summary24h.info, onClick: () => goToListWithFilter({ severity: 'info' as Severity }) },
+              { label: 'Active Alarms', icon: <AlertOutlined />, metric: summary24h.activeAlarms, onClick: () => goToListWithFilter({ type: 'Alarm' as LogType, status: 'active' as LogStatus }) },
+              { label: 'Offline Devices', icon: <DisconnectOutlined />, metric: summary24h.offlineDevices, onClick: () => goToListWithFilter({ keyword: 'heartbeat missing' }) },
+              { label: 'Affected GW', icon: <ClusterOutlined />, metric: summary24h.affectedGateways, onClick: () => goToListWithFilter({}) },
+            ].map((item) => (
+              <Col xs={12} sm={8} lg={6} xl={6} key={item.label}>
+                <Card className="logs-summary-card logs-card-clickable" bordered={false} onClick={item.onClick} style={{ cursor: 'pointer' }}>
+                  <div className="logs-summary-head">
+                    <span className="logs-summary-icon">{item.icon}</span>
+                    <Text className="logs-summary-label">{item.label}</Text>
+                    <RightOutlined style={{ marginLeft: 'auto', color: '#cbd5e1', fontSize: 9, flexShrink: 0 }} />
+                  </div>
+                  <div className="logs-summary-value">{item.metric.current}</div>
+                  <div className="logs-summary-trend">
+                    {item.metric.hasPrev ? (
+                      <Text type={item.metric.up ? 'success' : 'danger'} style={{ fontSize: 11 }}>
+                        {item.metric.up ? '↑' : '↓'} {Math.abs(item.metric.trend ?? 0)}%
+                      </Text>
+                    ) : (
+                      <Text type="secondary" style={{ fontSize: 11 }}>— no history</Text>
+                    )}
+                    <MiniSparkline points={item.metric.sparkline} up={item.metric.up} />
+                  </div>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+
+          {/* ── Charts + Recent Errors ── */}
+          <Row gutter={[10, 10]} style={{ marginTop: 10 }}>
+            <Col xs={24} xl={6}>
+              <Card className="overview-card" bordered={false} title="Distribution">
+                <Title level={5} style={{ marginTop: 0, marginBottom: 4, fontSize: 13 }}>By Severity</Title>
+                <Pie
+                  data={severityDist.filter((d) => d.value > 0)}
+                  angleField="value"
+                  colorField="severity"
+                  height={195}
+                  label={{ text: 'value', position: 'outside' }}
+                  legend={{ position: 'bottom' }}
+                  color={({ severity }: { severity: string }) => {
+                    if (severity === 'critical') return '#dc2626';
+                    if (severity === 'error') return '#f97316';
+                    if (severity === 'warning') return '#eab308';
+                    return '#3b82f6';
+                  }}
+                />
+                <Title level={5} style={{ marginTop: 12, marginBottom: 4, fontSize: 13 }}>Top Problem Sources</Title>
+                <Bar
+                  data={topSources.length > 0 ? topSources : [{ source: 'No issues', count: 0 }]}
+                  xField="source"
+                  yField="count"
+                  height={195}
+                />
               </Card>
             </Col>
-          ))}
-        </Row>
-      )}
 
+            <Col xs={24} xl={10}>
+              <Card className="overview-card" bordered={false} title="Trends">
+                <div style={{ marginBottom: 4 }}>
+                  <Text strong style={{ fontSize: 13 }}>Log Volume</Text>
+                  <br />
+                  <Text type="secondary" style={{ fontSize: 11 }}>Total number of log entries per hour in this period</Text>
+                </div>
+                <Line
+                  data={volumeTrend}
+                  xField="time"
+                  yField="value"
+                  height={160}
+                  smooth
+                  axis={{ y: { title: 'Count' } }}
+                />
+                <div style={{ marginTop: 14, marginBottom: 4 }}>
+                  <Text strong style={{ fontSize: 13 }}>Error &amp; Alarm Events</Text>
+                  <br />
+                  <Text type="secondary" style={{ fontSize: 11 }}>Errors/Critical logs (red) and triggered Alarms (blue) per hour</Text>
+                </div>
+                <Column
+                  data={errorAlarmTrend.length > 0 ? errorAlarmTrend : [{ time: '\u2014', metric: 'Error', value: 0 }]}
+                  xField="time"
+                  yField="value"
+                  seriesField="metric"
+                  isStack
+                  height={160}
+                  axis={{ y: { title: 'Count' } }}
+                />
+              </Card>
+            </Col>
 
-      {subView === 'overview' && (
-        <Row gutter={[12, 12]} style={{ marginTop: 4 }}>
-          <Col xs={24} xl={6}>
-            <Card className="overview-card" bordered={false}>
-              <Text className="overview-section-label">Visual Insights</Text>
-              <Title level={5}>Severity Distribution</Title>
-              <Pie
-                data={severityDist}
-                angleField="value"
-                colorField="severity"
-                height={220}
-                label={{ text: 'value', position: 'outside' }}
-                legend={{ position: 'bottom' }}
-                color={({ severity }: { severity: Severity }) => {
-                  if (severity === 'critical') return '#dc2626';
-                  if (severity === 'error') return '#f97316';
-                  if (severity === 'warning') return '#eab308';
-                  return '#3b82f6';
-                }}
-              />
-              <Title level={5} style={{ marginTop: 12 }}>Top Problem Sources</Title>
-              <Bar data={topSources} xField="source" yField="count" height={220} />
-            </Card>
-          </Col>
-
-          <Col xs={24} xl={18}>
-            <Card className="overview-card" bordered={false}>
-              <Text className="overview-section-label">Visual Insights</Text>
-              <Title level={5}>Trends Analysis</Title>
-              <Row gutter={[8, 8]}>
-                <Col xs={24} md={10}>
-                  <Card size="small" title="Log Volume Trend">
-                    <Line data={volumeTrend} xField="time" yField="value" height={260} smooth />
-                  </Card>
-                </Col>
-                <Col xs={24} md={14}>
-                  <Card size="small" title="Error / Alarm Trend">
-                    <Column data={errorAlarmTrend} xField="time" yField="value" seriesField="metric" isStack height={260} />
-                  </Card>
-                </Col>
-              </Row>
-            </Card>
-          </Col>
-        </Row>
+            <Col xs={24} xl={8}>
+              <Card
+                className="overview-card"
+                bordered={false}
+                title={
+                  <Space>
+                    <span>Recent Errors</span>
+                    <Tag color="volcano" style={{ fontSize: 11, margin: 0 }}>{recentErrors.length}</Tag>
+                  </Space>
+                }
+                extra={
+                  <Button type="link" size="small" onClick={() => goToListWithFilter({ severity: 'error' as Severity })}>
+                    View all →
+                  </Button>
+                }
+              >
+                {recentErrors.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: '#9ca3af' }}>
+                    <CheckCircleOutlined style={{ fontSize: 24, marginBottom: 8, display: 'block' }} />
+                    No errors in this period
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {recentErrors.map((rec) => (
+                      <div
+                        key={rec.id}
+                        style={{
+                          padding: '6px 10px',
+                          borderRadius: 6,
+                          background: rec.severity === 'critical' ? '#fef2f2' : '#fff7ed',
+                          border: `1px solid ${rec.severity === 'critical' ? '#fecaca' : '#fed7aa'}`,
+                          cursor: 'pointer',
+                        }}
+                        onClick={() => goToListWithFilter({ severity: rec.severity })}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                          <Tag
+                            color={rec.severity === 'critical' ? 'red' : 'volcano'}
+                            style={{ margin: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}
+                          >
+                            {rec.severity === 'critical' ? 'CRIT' : 'ERR'}
+                          </Tag>
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            {dayjs.unix(rec.timestamp).format('MM-DD HH:mm')}
+                          </Text>
+                          <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 100 }}>
+                            {rec.gateway}
+                          </Text>
+                        </div>
+                        <div style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#374151' }}>
+                          {rec.summary}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </Col>
+          </Row>
+        </>
       )}
 
       {subView === 'list' && (
@@ -648,13 +846,14 @@ const LogsCenter: React.FC = () => {
 
             <Table<GroupedLogRecord>
               rowKey="id"
+              size="small"
               columns={tableColumns}
               dataSource={groupedLogs}
               sticky
-              pagination={{ pageSize: 12, showSizeChanger: true }}
+              pagination={{ pageSize: 15, showSizeChanger: true, size: 'small' }}
               rowClassName={(row) => `logs-row-${row.severity}`}
               onRow={(row) => ({ onClick: () => onOpenDetail(row) })}
-              scroll={{ x: 1100, y: 'calc(100vh - 360px)' }}
+              scroll={{ x: 800 }}
             />
           </Card>
       )}

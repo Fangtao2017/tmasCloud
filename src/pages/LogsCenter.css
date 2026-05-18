@@ -110,6 +110,13 @@
   border-radius: 14px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.logs-card-clickable.ant-card:hover {
+  border-color: #93c5fd !important;
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.18) !important;
+  transform: translateY(-2px);
 }
 
 .logs-summary-card .ant-card-body {

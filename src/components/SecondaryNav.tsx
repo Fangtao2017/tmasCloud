@@ -80,7 +80,7 @@ const SecondaryNav: React.FC = () => {
 
 		if (section === 'report') {
 			return [
-                { key: 'log-overview', icon: <BarChartOutlined />, label: 'Overview', onClick: () => navigate(getPath('/log/overview')) },
+                { key: 'log-overview', icon: <BarChartOutlined />, label: 'Summary', onClick: () => navigate(getPath('/log/overview')) },
                 { key: 'log-list', icon: <FileTextOutlined />, label: 'Log List', onClick: () => navigate(getPath('/log/list')) },
 			];
 		}
@@ -174,7 +174,7 @@ const SecondaryNav: React.FC = () => {
             items.push(createItem('Log List'));
         } else if (effectivePath.startsWith('/log')) {
             items.push(createItem('Report'));
-            items.push(createItem('Overview'));
+            items.push(createItem('Summary'));
         }
         
         // Configuration
