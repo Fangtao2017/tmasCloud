@@ -1,0 +1,12 @@
+.system-device-row {
+    background-color: #fafafa;
+}
+
+.system-device-row:hover > td {
+    background-color: #f0f0f0 !important;
+}
+
+/* Ensure actions column doesn't override the row color */
+.system-device-row .ant-table-cell {
+    background-color: inherit;
+}

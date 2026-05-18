@@ -1,0 +1,125 @@
+.user-management {
+  height: 100%;
+  overflow-y: auto;
+  background-color: #ffffff;
+  padding: 20px;
+}
+
+.user-management__container {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Role summary cards */
+.user-management__role-summary {
+  margin-bottom: 0;
+}
+
+.user-management__role-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  background: #ffffff;
+  border: 1px solid #f0f0f0;
+  border-left: 3px solid;
+  border-radius: 8px;
+  transition: box-shadow 0.2s;
+}
+
+.user-management__role-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.user-management__role-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.user-management__role-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.user-management__role-count {
+  font-size: 24px;
+  font-weight: 700;
+  color: #001b34;
+  line-height: 1.2;
+}
+
+.user-management__role-desc {
+  margin-left: auto;
+  text-align: right;
+}
+
+/* Main table card */
+.user-management__table-card {
+  border-radius: 8px;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03),
+    0 1px 6px -1px rgba(0, 0, 0, 0.02),
+    0 2px 4px 0 rgba(0, 0, 0, 0.02);
+}
+
+.user-management__table-card .ant-card-body {
+  padding: 24px;
+}
+
+/* Header */
+.user-management__header {
+  margin-bottom: 20px;
+}
+
+.user-management__filters {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.user-management__search {
+  width: 320px;
+}
+
+.user-management__filter-select {
+  width: 140px;
+}
+
+/* User cell with avatar */
+.user-management__user-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-management__avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0f5c9b 0%, #1a8cff 100%);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+/* Role hint in modal */
+.user-management__role-hint {
+  background: #f6f8fa;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: -8px;
+}

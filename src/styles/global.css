@@ -1,0 +1,89 @@
+/* 逐行讲解版 global.css */
+/* 1) 让 body、#root 占满高度，配合 antd Layout 的 100vh 更稳定 */
+html, body, #root { 
+  height: 100%; 
+  overflow: hidden; /* Prevent whole page scrolling */
+  margin: 0;
+  padding: 0;
+}
+
+
+/* 2) 页面背景与滚动条小优化（可选） */
+body { background: #f5f7fa; }
+
+
+/* 3) 内容区卡片常见间距（可按需微调） */
+.ant-layout-content { min-height: 0; }
+
+/* 4) 分页器当前页样式 - 深蓝色 */
+.ant-pagination-item-active {
+  background-color: #003A70 !important;
+  border-color: #003A70 !important;
+}
+
+.ant-pagination-item-active a {
+  color: #fff !important;
+}
+
+.ant-pagination-item:hover {
+  border-color: #003A70 !important;
+}
+
+.ant-pagination-item:hover a {
+  color: #003A70 !important;
+}
+
+/* 5) Switch开关激活状态 - 深蓝色 */
+.ant-switch-checked {
+  background-color: #003A70 !important;
+}
+
+.ant-switch-checked:hover:not(.ant-switch-disabled) {
+  background-color: #00427d !important;
+}
+
+/* 6) Steps步骤条 - 深蓝色 */
+.ant-steps-item-process .ant-steps-item-icon {
+  border-color: #003A70 !important;
+}
+
+.ant-steps-item-process .ant-steps-icon {
+  color: #003A70 !important;
+}
+
+.ant-steps-item-process > .ant-steps-item-container > .ant-steps-item-tail::after {
+  background-color: #003A70 !important;
+}
+
+.ant-steps-item-finish .ant-steps-item-icon {
+  border-color: #003A70 !important;
+}
+
+.ant-steps-item-finish .ant-steps-item-icon > .ant-steps-icon {
+  color: #003A70 !important;
+}
+
+.ant-steps-item-finish > .ant-steps-item-container > .ant-steps-item-tail::after {
+  background-color: #003A70 !important;
+}
+/* Add Button Animation - Subtle Lift + Icon Micro-motion */
+.add-button-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.add-button-hover:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 4px 12px rgba(0, 58, 112, 0.3) !important; /* Using the primary color for shadow tint */
+}
+
+.add-button-hover:hover .anticon {
+  transform: scale(1.1);
+  transition: transform 0.3s ease;
+}
+
+.add-button-hover:active {
+  transform: translateY(1px) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+}
+

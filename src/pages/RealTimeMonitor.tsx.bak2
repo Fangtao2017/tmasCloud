@@ -1,0 +1,1550 @@
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { 
+  Layout, Card, Input, Button, Row, Col, Typography, 
+  Space, Tag, Badge, Drawer, Collapse, Checkbox, 
+  Radio, Empty, Progress, InputNumber, message, Select, Tooltip, Slider,
+  Switch as AntSwitch, Divider, Segmented
+} from 'antd';
+import { 
+  ReloadOutlined, FilterOutlined, 
+  WifiOutlined, 
+  DisconnectOutlined, AlertOutlined, CheckCircleOutlined,
+  EnvironmentOutlined,
+  ClockCircleOutlined,
+  EditOutlined,
+  DashboardOutlined,
+  ControlOutlined,
+  LineChartOutlined,
+  AppstoreOutlined
+} from '@ant-design/icons';
+import { Line } from '@ant-design/charts';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import { fetchDevices, writeParameterValue } from '../api/deviceApi';
+import type { DeviceData, DeviceParameterData } from '../data/devicesData';
+import { writableConfigs } from '../data/devicesData';
+
+dayjs.extend(relativeTime);
+
+const { Sider, Content } = Layout;
+const { Title, Text } = Typography;
+const { Panel } = Collapse;
+
+// --- Types ---
+interface FilterState {
+  status: ('online' | 'offline')[];
+  alarm: ('active' | 'normal')[];
+  locations: string[];
+  types: string[];
+  freshness: 'all' | '1min' | '5min' | 'stale';
+  search: string;
+}
+
+// --- Helper Functions ---
+const getDeviceType = (device: DeviceData): string => {
+  if (device.modelName?.includes('OCC')) return 'Occupancy';
+  if (device.modelName?.includes('DIM')) return 'Lighting';
+  if (device.modelName?.includes('EMS')) return 'Power Meter';
+  if (device.modelName?.includes('TK') || device.modelName?.includes('FM')) return 'Water Meter';
+  // Fallback based on parameters if model name is generic
+  if (device.liveData) {
+      if (device.liveData.some(p => p.name.toLowerCase().includes('temp'))) return 'Temperature';
+      if (device.liveData.some(p => p.name.toLowerCase().includes('power'))) return 'Power';
+  }
+  return 'Other';
+};
+
+const getFreshnessStatus = (timestamp?: number) => {
+    if (!timestamp) return 'stale';
+    const diff = dayjs().unix() - timestamp;
+    if (diff < 60) return 'fresh';
+    if (diff < 300) return 'recent';
+    return 'stale';
+};
+
+const getFreshnessColor = (status: string) => {
+    switch (status) {
+        case 'fresh': return '#52c41a'; // Green
+        case 'recent': return '#faad14'; // Yellow
+        case 'stale': return '#d9d9d9'; // Grey
+        default: return '#d9d9d9';
+    }
+};
+
+// --- localStorage helpers for chart data ---
+// Key format: tmas_rtm_{devId}_{chartIndex} → stores { paramId, points[] }
+// Points store raw unix timestamps for proper aggregation
+const CHART_STORAGE_PREFIX = 'tmas_rtm_';
+
+interface RawPoint {
+    ts: number;   // unix seconds
+    value: number;
+}
+
+interface ChartCacheEntry {
+    paramId: number;
+    points: RawPoint[];
+}
+
+const loadChartCache = (devId: number | string, chartIdx: number): ChartCacheEntry | null => {
+    try {
+        const raw = localStorage.getItem(`${CHART_STORAGE_PREFIX}${devId}_${chartIdx}`);
+        if (!raw) return null;
+        return JSON.parse(raw) as ChartCacheEntry;
+    } catch { return null; }
+};
+
+const saveChartCache = (devId: number | string, chartIdx: number, entry: ChartCacheEntry) => {
+    try {
+        const trimmed = { ...entry, points: entry.points.length > 10000 ? entry.points.slice(-10000) : entry.points };
+        localStorage.setItem(`${CHART_STORAGE_PREFIX}${devId}_${chartIdx}`, JSON.stringify(trimmed));
+    } catch { /* ignore */ }
+};
+
+const clearChartCache = (devId: number | string, chartIdx: number) => {
+    try { localStorage.removeItem(`${CHART_STORAGE_PREFIX}${devId}_${chartIdx}`); } catch { /* ignore */ }
+};
+
+// --- Visual Dashboard Helpers ---
+const BRAND_COLOR = '#003A70';
+// Secondary accent used in chart 2 stroke
+
+const getParamCategory = (param: DeviceParameterData): 'temperature' | 'percentage' | 'boolean' | 'electrical' | 'default' => {
+    const name = param.name.toLowerCase();
+    if (name.includes('temp') || name.includes('setpoint')) return 'temperature';
+    if (name.includes('humidity') || name.includes('brightness') || name.includes('level')) return 'percentage';
+    if (name.includes('output') || name.includes('input')) return 'boolean';
+    if (name.includes('voltage') || name.includes('current') || name.includes('power') || name.includes('energy') || name.includes('frequency')) return 'electrical';
+    return 'default';
+};
+
+const getCategoryIcon = (category: string) => {
+    switch (category) {
+        case 'temperature': return '🌡️';
+        case 'percentage': return '📊';
+        case 'boolean': return '⚡';
+        case 'electrical': return '🔌';
+        default: return '📈';
+    }
+};
+
+const getGaugeColor = (category: string, value: number): string => {
+    switch (category) {
+        case 'temperature':
+            if (value < 18) return '#1890ff';
+            if (value < 26) return '#52c41a';
+            if (value < 35) return '#faad14';
+            return '#ff4d4f';
+        case 'percentage':
+            if (value < 20) return '#ff4d4f';
+            if (value < 80) return '#52c41a';
+            return '#faad14';
+        default:
+            return BRAND_COLOR;
+    }
+};
+
+// Convert raw points to chart data — NO aggregation, all points shown.
+// Uses numeric timestamps (ms) so G2 treats x-axis as continuous time scale.
+const toChartData = (raw: RawPoint[]): { time: number; value: number }[] => {
+    return raw.map(p => ({
+        time: p.ts * 1000, // unix ms for G2 time scale
+        value: Math.round(p.value * 100) / 100,
+    }));
+};
+
+// Determine span label for stats display
+const getSpanLabel = (raw: RawPoint[]): string => {
+    if (raw.length < 2) return '';
+    const span = raw[raw.length - 1].ts - raw[0].ts;
+    if (span < 600) return '< 10 min';
+    if (span < 3600) return '< 1 hr';
+    if (span < 86400) return '< 1 day';
+    return '> 1 day';
+};
+
+// --- Components ---
+
+// 0. KPI Summary Bar
+const KpiBar: React.FC<{ devices: DeviceData[] }> = ({ devices }) => {
+    const online = devices.filter(d => d.nwkStatus === 1).length;
+    const offline = devices.length - online;
+    const alarms = devices.filter(d => d.liveData?.some(p => p.alarm)).length;
+    const freshCount = devices.filter(d => {
+        const ts = d.liveData?.reduce((max, p) => Math.max(max, p.timestamp || 0), 0) || 0;
+        return getFreshnessStatus(ts) === 'fresh';
+    }).length;
+
+    const kpiCards = [
+        {
+            title: 'Total Devices',
+            value: devices.length,
+            icon: <DashboardOutlined style={{ fontSize: 22, color: BRAND_COLOR }} />,
+            bg: 'linear-gradient(135deg, #e8f4fd 0%, #d6ecfa 100%)',
+            color: BRAND_COLOR,
+        },
+        {
+            title: 'Online',
+            value: online,
+            suffix: <Text type="secondary" style={{ fontSize: 13 }}>/ {offline} off</Text>,
+            icon: <WifiOutlined style={{ fontSize: 22, color: '#52c41a' }} />,
+            bg: 'linear-gradient(135deg, #f0fbe8 0%, #e0f5d0 100%)',
+            color: '#52c41a',
+        },
+        {
+            title: 'Active Alarms',
+            value: alarms,
+            icon: <AlertOutlined style={{ fontSize: 22, color: alarms > 0 ? '#ff4d4f' : '#52c41a' }} />,
+            bg: alarms > 0 ? 'linear-gradient(135deg, #fff2f0 0%, #ffe8e5 100%)' : 'linear-gradient(135deg, #f0fbe8 0%, #e0f5d0 100%)',
+            color: alarms > 0 ? '#ff4d4f' : '#52c41a',
+        },
+        {
+            title: 'Data Fresh (<1m)',
+            value: freshCount,
+            suffix: <Text type="secondary" style={{ fontSize: 13 }}>/ {devices.length}</Text>,
+            icon: <ClockCircleOutlined style={{ fontSize: 22, color: '#1890ff' }} />,
+            bg: 'linear-gradient(135deg, #e8f4fd 0%, #d6ecfa 100%)',
+            color: '#1890ff',
+        },
+    ];
+
+    return (
+        <Row gutter={16} style={{ marginBottom: 20, flex: '0 0 auto' }}>
+            {kpiCards.map((kpi, i) => (
+                <Col span={6} key={i}>
+                    <Card
+                        size="small"
+                        style={{ background: kpi.bg, border: 'none', borderRadius: 10 }}
+                        bodyStyle={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 14 }}
+                    >
+                        <div style={{
+                            width: 44, height: 44, borderRadius: 10,
+                            background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            boxShadow: '0 2px 6px rgba(0,0,0,0.06)', flexShrink: 0,
+                        }}>
+                            {kpi.icon}
+                        </div>
+                        <div>
+                            <Text type="secondary" style={{ fontSize: 12, display: 'block', lineHeight: 1.2 }}>{kpi.title}</Text>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                                <Text strong style={{ fontSize: 24, color: kpi.color, lineHeight: 1.2 }}>{kpi.value}</Text>
+                                {kpi.suffix}
+                            </div>
+                        </div>
+                    </Card>
+                </Col>
+            ))}
+        </Row>
+    );
+};
+
+// 1. Filter Panel
+const FilterPanel: React.FC<{
+  filters: FilterState;
+  onChange: (newFilters: FilterState) => void;
+  locations: string[];
+  types: string[];
+  counts: { locations: Record<string, number>; types: Record<string, number> };
+}> = ({ filters, onChange, locations, types, counts }) => {
+  
+  return (
+    <div style={{ padding: '16px' }}>
+      <div style={{ marginBottom: 24 }}>
+        <Title level={5}><FilterOutlined /> Filters</Title>
+      </div>
+
+      <Collapse defaultActiveKey={['status', 'alarm', 'freshness']} ghost expandIconPosition="end">
+        <Panel header="Sub-Device Status" key="status">
+          <Checkbox.Group 
+            style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+            value={filters.status}
+            onChange={(vals) => onChange({ ...filters, status: vals as any[] })}
+          >
+            <Checkbox value="online"><Badge status="success" text="Online" /></Checkbox>
+            <Checkbox value="offline"><Badge status="error" text="Offline" /></Checkbox>
+          </Checkbox.Group>
+        </Panel>
+
+        <Panel header="Alarm Status" key="alarm">
+           <Checkbox.Group 
+            style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+            value={filters.alarm}
+            onChange={(vals) => onChange({ ...filters, alarm: vals as any[] })}
+          >
+            <Checkbox value="active"><Text type="danger"><AlertOutlined /> Active Alarm</Text></Checkbox>
+            <Checkbox value="normal"><Text type="success"><CheckCircleOutlined /> Normal</Text></Checkbox>
+          </Checkbox.Group>
+        </Panel>
+
+        <Panel header="Data Freshness" key="freshness">
+            <Radio.Group 
+                value={filters.freshness} 
+                onChange={e => onChange({ ...filters, freshness: e.target.value })}
+                style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+            >
+                <Radio value="all">All Data</Radio>
+                <Radio value="1min"><Text type="success">Updated &lt; 1 min</Text></Radio>
+                <Radio value="5min"><Text type="warning">Updated &lt; 5 min</Text></Radio>
+                <Radio value="stale"><Text type="secondary">Stale / No Data</Text></Radio>
+            </Radio.Group>
+        </Panel>
+
+        <Panel header="Location" key="location">
+            <Checkbox.Group 
+                style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+                value={filters.locations}
+                onChange={(vals) => onChange({ ...filters, locations: vals as string[] })}
+            >
+                {locations.map(loc => (
+                    <Checkbox key={loc} value={loc}>
+                        {loc || 'Unknown'} <Text type="secondary" style={{ fontSize: 12 }}>({counts.locations[loc] || 0})</Text>
+                    </Checkbox>
+                ))}
+            </Checkbox.Group>
+        </Panel>
+
+        <Panel header="Device Type" key="type">
+             <Checkbox.Group 
+                style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+                value={filters.types}
+                onChange={(vals) => onChange({ ...filters, types: vals as string[] })}
+            >
+                {types.map(type => (
+                    <Checkbox key={type} value={type}>
+                        {type} <Text type="secondary" style={{ fontSize: 12 }}>({counts.types[type] || 0})</Text>
+                    </Checkbox>
+                ))}
+            </Checkbox.Group>
+        </Panel>
+      </Collapse>
+      
+      <Button type="link" onClick={() => onChange({
+          status: [], alarm: [], locations: [], types: [], freshness: 'all', search: ''
+      })}>
+          Clear All Filters
+      </Button>
+    </div>
+  );
+};
+
+// 1.5 Visual Parameter Display (for cards)
+const ParamVisual: React.FC<{ param: DeviceParameterData; compact?: boolean }> = ({ param, compact }) => {
+    const category = getParamCategory(param);
+    const numVal = typeof param.value === 'string' ? parseFloat(param.value) : Number(param.value);
+    const hasValue = param.value !== null && param.value !== undefined && !isNaN(numVal);
+
+    if (!hasValue) {
+        return (
+            <div style={{ textAlign: 'center', padding: compact ? '2px 0' : '4px 0' }}>
+                <Text type="secondary" style={{ fontSize: 10, display: 'block' }}>{param.name}</Text>
+                <Text style={{ fontSize: 14, color: '#d9d9d9' }}>--</Text>
+            </div>
+        );
+    }
+
+    // Boolean (output/input) — colored dot
+    if (category === 'boolean') {
+        const isOn = numVal === 1;
+        return (
+            <div style={{ textAlign: 'center', padding: compact ? '2px 0' : '4px 0' }}>
+                <Text type="secondary" style={{ fontSize: 10, display: 'block', marginBottom: 2 }}>{param.name}</Text>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                    <div style={{
+                        width: 10, height: 10, borderRadius: '50%',
+                        background: isOn ? '#52c41a' : '#d9d9d9',
+                        boxShadow: isOn ? '0 0 6px rgba(82,196,26,0.5)' : 'none',
+                    }} />
+                    <Text strong style={{ fontSize: 13, color: isOn ? '#52c41a' : '#8c8c8c' }}>
+                        {isOn ? 'ON' : 'OFF'}
+                    </Text>
+                </div>
+            </div>
+        );
+    }
+
+    // Percentage — mini progress bar
+    if (category === 'percentage') {
+        const pct = Math.min(100, Math.max(0, numVal));
+        return (
+            <div style={{ padding: compact ? '2px 0' : '4px 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <Text type="secondary" style={{ fontSize: 10 }}>{param.name}</Text>
+                    <Text strong style={{ fontSize: 13 }}>{numVal}<span style={{ fontSize: 9 }}>%</span></Text>
+                </div>
+                <Progress
+                    percent={pct}
+                    size="small"
+                    showInfo={false}
+                    strokeColor={getGaugeColor('percentage', numVal)}
+                    style={{ marginTop: 2, marginBottom: 0 }}
+                />
+            </div>
+        );
+    }
+
+    // Temperature — circular gauge
+    if (category === 'temperature') {
+        const pct = Math.min(100, Math.max(0, ((numVal + 10) / 60) * 100)); // range -10 to 50
+        return (
+            <div style={{ textAlign: 'center', padding: compact ? '0' : '2px 0' }}>
+                <Text type="secondary" style={{ fontSize: 10, display: 'block', marginBottom: 2 }}>{param.name}</Text>
+                <Progress
+                    type="dashboard"
+                    percent={pct}
+                    width={compact ? 52 : 60}
+                    strokeColor={getGaugeColor('temperature', numVal)}
+                    format={() => (
+                        <span style={{ fontSize: compact ? 12 : 14, fontWeight: 600, color: getGaugeColor('temperature', numVal) }}>
+                            {numVal}<span style={{ fontSize: 9 }}>°C</span>
+                        </span>
+                    )}
+                    gapDegree={75}
+                    strokeWidth={8}
+                />
+            </div>
+        );
+    }
+
+    // Electrical / Default — large number
+    const color = param.alarm ? '#cf1322' : (category === 'electrical' ? BRAND_COLOR : '#262626');
+    return (
+        <div style={{ textAlign: 'center', padding: compact ? '2px 0' : '4px 0' }}>
+            <Text type="secondary" style={{ fontSize: 10, display: 'block', marginBottom: 1 }}>{param.name}</Text>
+            <Text strong style={{ fontSize: compact ? 15 : 17, color }}>
+                {numVal}
+                {param.unit && <span style={{ fontSize: 10, fontWeight: 400, color: '#8c8c8c', marginLeft: 2 }}>{param.unit}</span>}
+            </Text>
+        </div>
+    );
+};
+
+// 2. Device Card
+const DeviceCard: React.FC<{ device: DeviceData; onClick: () => void }> = ({ device, onClick }) => {
+    const isOnline = device.nwkStatus === 1;
+    const isAlarm = device.liveData?.some(p => p.alarm);
+    const isController = (device.id as number) === 1;
+    
+    // Find latest timestamp among parameters
+    const lastUpdate = device.liveData?.reduce((max, p) => Math.max(max, p.timestamp || 0), 0) || device.lastSeen || 0;
+    const freshness = getFreshnessStatus(lastUpdate);
+    
+    // Get up to 4 key parameters, prioritizing alarm and category variety
+    const keyParams = useMemo(() => {
+        if (!device.liveData || device.liveData.length === 0) return [];
+        const alarmed = device.liveData.filter(p => p.alarm);
+        const rest = device.liveData.filter(p => !p.alarm);
+        const merged = [...alarmed, ...rest];
+        return merged.slice(0, 4);
+    }, [device.liveData]);
+
+    const borderColor = isController ? '#d4a017' : isAlarm ? '#ff4d4f' : isOnline ? '#52c41a' : '#bfbfbf';
+    const deviceType = getDeviceType(device);
+
+    return (
+        <Card
+            hoverable
+            onClick={onClick}
+            className="rtm-device-card"
+            style={{ 
+                height: '100%', 
+                borderLeft: `4px solid ${borderColor}`,
+                opacity: isOnline ? 1 : 0.6,
+                borderRadius: 10,
+                overflow: 'hidden',
+            }}
+            bodyStyle={{ padding: '14px 16px', height: '100%', display: 'flex', flexDirection: 'column' }}
+        >
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Text strong style={{ fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {String(device.id)}. {device.name}
+                        </Text>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                        <Tag color={isOnline ? 'success' : 'default'} style={{ marginRight: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
+                            {isOnline ? 'Online' : 'Offline'}
+                        </Tag>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            <EnvironmentOutlined style={{ fontSize: 10 }} /> {device.location || 'N/A'}
+                        </Text>
+                    </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0 }}>
+                    {isAlarm && (
+                        <Tag color="error" style={{ marginRight: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
+                            <AlertOutlined /> Alarm
+                        </Tag>
+                    )}
+                    <Text type="secondary" style={{ fontSize: 10 }}>{deviceType}</Text>
+                </div>
+            </div>
+
+            {/* Visual Parameter Grid */}
+            <div style={{ flex: 1, marginBottom: 8 }}>
+                {keyParams.length > 0 ? (
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: keyParams.length <= 2 ? '1fr 1fr' : '1fr 1fr',
+                        gap: 6,
+                    }}>
+                        {keyParams.map((p, idx) => (
+                            <div
+                                key={`${p.id}_${idx}`}
+                                style={{
+                                    background: p.alarm ? '#fff2f0' : '#fafafa',
+                                    borderRadius: 8,
+                                    padding: '6px 8px',
+                                    border: p.alarm ? '1px solid #ffccc7' : '1px solid transparent',
+                                }}
+                            >
+                                <ParamVisual param={p} compact />
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div style={{ textAlign: 'center', padding: '16px 0', color: '#d9d9d9' }}>
+                        <AppstoreOutlined style={{ fontSize: 24, display: 'block', marginBottom: 4 }} />
+                        <Text type="secondary" style={{ fontSize: 11 }}>No Parameters</Text>
+                    </div>
+                )}
+            </div>
+
+            {/* Footer */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
+                <Space size={4}>
+                    <div style={{
+                        width: 6, height: 6, borderRadius: '50%',
+                        background: getFreshnessColor(freshness),
+                        boxShadow: freshness === 'fresh' ? '0 0 4px rgba(82,196,26,0.5)' : 'none',
+                    }} />
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                        {lastUpdate ? dayjs.unix(lastUpdate).fromNow() : 'Never'}
+                    </Text>
+                </Space>
+                <Button size="small" type="link" style={{ padding: '0 4px', fontSize: 12, color: BRAND_COLOR }} onClick={(e) => { e.stopPropagation(); onClick(); }}>
+                    Details →
+                </Button>
+            </div>
+        </Card>
+    );
+};
+
+// 3. Detail Drawer Line Chart (live-data only, auto-aggregating)
+const ParamChart: React.FC<{
+    deviceId: number | string;
+    params: DeviceParameterData[];
+    chartIndex: number;
+    liveData: DeviceParameterData[];
+}> = ({ deviceId, params, chartIndex, liveData }) => {
+    const cached = loadChartCache(deviceId, chartIndex);
+    const [selectedParamId, setSelectedParamId] = useState<number | null>(cached?.paramId ?? null);
+    // rawPoints is the source of truth, updated every second via ref
+    const [rawPoints, setRawPoints] = useState<RawPoint[]>(cached?.points ?? []);
+    // Time range filter: [startUnixSec, endUnixSec] or null for all
+    const [timeRange, setTimeRange] = useState<[number, number] | null>(null);
+
+    // Throttle chart re-renders: accumulate points in ref, flush every 5s
+    const pendingPointsRef = useRef<RawPoint[]>([]);
+    const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const isHoveringRef = useRef(false); // pause flush while user hovers (keeps tooltip alive)
+    const FLUSH_INTERVAL = 5000; // 5 seconds
+
+    // Flush pending points into state (shared by timer & mouse-leave)
+    const flushPendingPoints = useCallback(() => {
+        if (pendingPointsRef.current.length === 0) return;
+        const batch = pendingPointsRef.current;
+        pendingPointsRef.current = [];
+        setRawPoints(prev => {
+            const merged = [...prev, ...batch];
+            const trimmed = merged.length > 10000 ? merged.slice(-10000) : merged;
+            if (selectedParamId !== null) {
+                saveChartCache(deviceId, chartIndex, { paramId: selectedParamId, points: trimmed });
+            }
+            return trimmed;
+        });
+    }, [deviceId, chartIndex, selectedParamId]);
+
+    // Start/stop flush timer — skips flush while mouse hovers over chart
+    useEffect(() => {
+        flushTimerRef.current = setInterval(() => {
+            if (!isHoveringRef.current) {
+                flushPendingPoints();
+            }
+        }, FLUSH_INTERVAL);
+        return () => { if (flushTimerRef.current) clearInterval(flushTimerRef.current); };
+    }, [flushPendingPoints]);
+
+    // When parameter selection changes: clear old data, seed with current live value
+    const handleParamChange = useCallback((newParamId: number | null) => {
+        clearChartCache(deviceId, chartIndex);
+        pendingPointsRef.current = [];
+        setSelectedParamId(newParamId);
+
+        if (newParamId === null) {
+            setRawPoints([]);
+            return;
+        }
+
+        // Seed first data point from current live value
+        const liveParam = liveData.find(p => p.id === newParamId);
+        if (liveParam && liveParam.value !== null && liveParam.value !== undefined) {
+            const val = typeof liveParam.value === 'string' ? parseFloat(liveParam.value as string) : Number(liveParam.value);
+            if (!isNaN(val)) {
+                const ts = liveParam.timestamp || Math.floor(Date.now() / 1000);
+                const initial: RawPoint[] = [{ ts, value: val }];
+                setRawPoints(initial);
+                saveChartCache(deviceId, chartIndex, { paramId: newParamId, points: initial });
+                return;
+            }
+        }
+        setRawPoints([]);
+    }, [deviceId, chartIndex, liveData]);
+
+    // Live data update: accumulate in ref (no re-render), flush handles state update
+    const lastTsRef = useRef<number>(0);
+    useEffect(() => {
+        if (selectedParamId === null) return;
+        const liveParam = liveData.find(p => p.id === selectedParamId);
+        if (!liveParam || liveParam.value === null || liveParam.value === undefined) return;
+        const val = typeof liveParam.value === 'string' ? parseFloat(liveParam.value as string) : Number(liveParam.value);
+        if (isNaN(val)) return;
+        const ts = liveParam.timestamp || Math.floor(Date.now() / 1000);
+
+        if (ts !== lastTsRef.current) {
+            lastTsRef.current = ts;
+            pendingPointsRef.current.push({ ts, value: val });
+        }
+    }, [liveData, selectedParamId]);
+
+    // Filter by time range, then convert to chart data
+    const visiblePoints = useMemo(() => {
+        if (!timeRange || rawPoints.length === 0) return rawPoints;
+        const [start, end] = timeRange;
+        return rawPoints.filter(p => p.ts >= start && p.ts <= end);
+    }, [rawPoints, timeRange]);
+
+    const chartData = useMemo(() => toChartData(visiblePoints), [visiblePoints]);
+    const spanLabel = useMemo(() => getSpanLabel(visiblePoints), [visiblePoints]);
+
+    // Stats based on visible window
+    const stats = useMemo(() => {
+        if (visiblePoints.length === 0) return null;
+        const values = visiblePoints.map(p => p.value);
+        return {
+            current: Math.round(values[values.length - 1] * 100) / 100,
+            avg: Math.round((values.reduce((s, v) => s + v, 0) / values.length) * 100) / 100,
+            min: Math.round(Math.min(...values) * 100) / 100,
+            max: Math.round(Math.max(...values) * 100) / 100,
+            count: visiblePoints.length,
+            total: rawPoints.length,
+        };
+    }, [visiblePoints, rawPoints]);
+
+    const paramUnit = params.find(p => p.id === selectedParamId)?.unit || '';
+    const paramName = params.find(p => p.id === selectedParamId)?.name || 'Value';
+    const strokeColor = chartIndex === 0 ? '#003A70' : '#8CC63F';
+
+    // Determine tick format based on visible data span
+    const spanSec = visiblePoints.length >= 2 ? visiblePoints[visiblePoints.length - 1].ts - visiblePoints[0].ts : 0;
+    const tickFormat = spanSec < 600 ? 'HH:mm:ss' : spanSec < 86400 ? 'HH:mm' : 'MM/DD HH:mm';
+
+    // Memoize the entire <Line> element so it only re-renders when chartData
+    // actually changes (every 5s flush), NOT on every 1s parent poll.
+    // This keeps the G2 chart instance alive → tooltip stays visible.
+    const chartElement = useMemo(() => {
+        if (chartData.length === 0) return null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const cfg: any = {
+            data: chartData,
+            xField: 'time',
+            yField: 'value',
+            height: 200,
+            shapeField: 'smooth',
+            style: { stroke: strokeColor, lineWidth: 2 },
+            point: chartData.length <= 80 ? { style: { fill: strokeColor, r: 2 } } : undefined,
+            scale: { x: { type: 'time' } },
+            axis: {
+                y: { title: false },
+                x: {
+                    title: false,
+                    labelAutoRotate: false,
+                    labelAutoHide: true,
+                    labelFormatter: (v: number) => dayjs(v).format(tickFormat),
+                },
+            },
+            tooltip: {
+                title: 'time',
+                items: [{ channel: 'y' }],
+            },
+            interaction: {
+                tooltip: {
+                    crosshairs: true,
+                    crosshairsStroke: '#bbb',
+                    crosshairsLineWidth: 1,
+                    // Custom render — guarantees tooltip content is shown
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    render: (_event: any, { title, items }: { title: any; items: any[] }) => {
+                        const timeStr = dayjs(Number(title)).format('HH:mm:ss');
+                        const rows = items.map((item: any) => {
+                            const val = item.value ?? item.name;
+                            return `<div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${strokeColor}"></span>
+                                <span style="color:#595959">${paramName}:</span>
+                                <span style="font-weight:600">${val}${paramUnit ? ' ' + paramUnit : ''}</span>
+                            </div>`;
+                        }).join('');
+                        return `<div style="padding:8px 12px;font-size:13px">
+                            <div style="font-weight:600;margin-bottom:4px;color:#262626">${timeStr}</div>
+                            ${rows}
+                        </div>`;
+                    },
+                },
+            },
+            legend: false,
+            animation: false,
+        };
+        return <Line {...cfg} />;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [chartData, strokeColor, paramName, paramUnit, tickFormat]);
+
+    // Data time range for Slider bounds (unix seconds)
+    const sliderMin = rawPoints.length > 0 ? rawPoints[0].ts : 0;
+    const sliderMax = rawPoints.length > 0 ? rawPoints[rawPoints.length - 1].ts : 0;
+    const sliderRange: [number, number] = timeRange || [sliderMin, sliderMax];
+
+    return (
+        <Card
+            size="small"
+            style={{ marginBottom: 12, border: '1px solid #e8e8e8' }}
+            bodyStyle={{ padding: '12px 16px' }}
+        >
+            {/* Header row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: strokeColor, flexShrink: 0 }} />
+                <Text strong style={{ fontSize: 13, whiteSpace: 'nowrap' }}>Chart {chartIndex + 1}</Text>
+                <Select
+                    size="small"
+                    placeholder="Select parameter"
+                    style={{ flex: 1 }}
+                    value={selectedParamId}
+                    onChange={(v) => handleParamChange(v ?? null)}
+                    options={params.map(p => ({ label: `${p.name}${p.unit ? ` (${p.unit})` : ''}`, value: p.id }))}
+                    allowClear
+                />
+            </div>
+
+            {selectedParamId === null ? (
+                <div style={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fafafa', borderRadius: 8, color: '#bfbfbf', fontSize: 13 }}>
+                    Select a parameter to display chart
+                </div>
+            ) : chartData.length === 0 ? (
+                <div style={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fafafa', borderRadius: 8, color: '#bfbfbf', fontSize: 13 }}>
+                    Waiting for data...
+                </div>
+            ) : (
+                <>
+                    {/* Stats row */}
+                    {stats && (
+                        <div style={{ display: 'flex', gap: 16, marginBottom: 6, fontSize: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <span><Text type="secondary">Current:</Text> <Text strong style={{ color: strokeColor }}>{stats.current}{paramUnit ? ` ${paramUnit}` : ''}</Text></span>
+                            <span><Text type="secondary">Avg:</Text> <Text strong>{stats.avg}</Text></span>
+                            <span><Text type="secondary">Min:</Text> <Text strong style={{ color: '#1677ff' }}>{stats.min}</Text></span>
+                            <span><Text type="secondary">Max:</Text> <Text strong style={{ color: '#ff4d4f' }}>{stats.max}</Text></span>
+                            <Text type="secondary" style={{ marginLeft: 'auto', fontSize: 11 }}>
+                                {stats.count}{stats.total !== stats.count ? `/${stats.total}` : ''} pts{spanLabel ? ` · ${spanLabel}` : ''}
+                            </Text>
+                        </div>
+                    )}
+                    <div
+                        onMouseEnter={() => { isHoveringRef.current = true; }}
+                        onMouseLeave={() => { isHoveringRef.current = false; flushPendingPoints(); }}
+                    >
+                        {chartElement}
+                    </div>
+                    {/* Time range slider */}
+                    {rawPoints.length > 1 && (
+                        <div style={{ padding: '4px 8px 0' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#8c8c8c', marginBottom: -4 }}>
+                                <span>{dayjs.unix(sliderMin).format('HH:mm:ss')}</span>
+                                {timeRange && (
+                                    <Button size="small" type="link" onClick={() => setTimeRange(null)} style={{ fontSize: 11, padding: 0, height: 'auto', lineHeight: 1 }}>
+                                        Reset
+                                    </Button>
+                                )}
+                                <span>{dayjs.unix(sliderMax).format('HH:mm:ss')}</span>
+                            </div>
+                            <Slider
+                                range
+                                min={sliderMin}
+                                max={sliderMax}
+                                step={1}
+                                value={sliderRange}
+                                onChange={(val) => {
+                                    const v = val as [number, number];
+                                    // If dragged back to full range, clear filter
+                                    if (v[0] <= sliderMin && v[1] >= sliderMax) {
+                                        setTimeRange(null);
+                                    } else {
+                                        setTimeRange(v);
+                                    }
+                                }}
+                                tooltip={{
+                                    formatter: (v) => v ? dayjs.unix(v).format('HH:mm:ss') : '',
+                                }}
+                                styles={{ track: { background: strokeColor }, rail: { background: '#e8e8e8' } }}
+                            />
+                        </div>
+                    )}
+                </>
+            )}
+        </Card>
+    );
+};
+
+// 3.5. Control Widget (for writable parameters in detail view)
+const ControlWidget: React.FC<{
+    param: DeviceParameterData;
+    onWrite: (paramId: number, value: number, duration: number) => Promise<void>;
+    writing: boolean;
+    writingParamId: number | null;
+}> = ({ param, onWrite, writing, writingParamId }) => {
+    const config = writableConfigs[param.name];
+    const numVal = typeof param.value === 'string' ? parseFloat(param.value as string) : Number(param.value);
+    const [localValue, setLocalValue] = useState<number>(numVal || 0);
+    const [duration, setDuration] = useState(10);
+    const [dirty, setDirty] = useState(false);
+    const isThisWriting = writing && writingParamId === param.id;
+
+    // Sync from live data when not dirty
+    useEffect(() => {
+        if (!dirty) {
+            const v = typeof param.value === 'string' ? parseFloat(param.value as string) : Number(param.value);
+            if (!isNaN(v)) setLocalValue(v);
+        }
+    }, [param.value, dirty]);
+
+    const handleApply = async () => {
+        await onWrite(param.id, localValue, duration);
+        setDirty(false);
+    };
+
+    // Switch type — toggle immediately
+    if (config?.type === 'switch') {
+        const isOn = numVal === 1;
+        return (
+            <div className="rtm-control-widget">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 13 }}>{param.name}</Text>
+                    <AntSwitch
+                        checked={isOn}
+                        loading={isThisWriting}
+                        onChange={(checked) => {
+                            const val = checked ? 1 : 0;
+                            setLocalValue(val);
+                            onWrite(param.id, val, duration);
+                        }}
+                        style={isOn ? { background: BRAND_COLOR } : {}}
+                    />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
+                    <Text type="secondary" style={{ fontSize: 10 }}>Duration:</Text>
+                    <InputNumber
+                        size="small"
+                        value={duration}
+                        onChange={(v) => setDuration(v ?? 10)}
+                        min={1}
+                        style={{ width: 60, fontSize: 11 }}
+                        addonAfter="s"
+                    />
+                </div>
+            </div>
+        );
+    }
+
+    // Select type
+    if (config?.type === 'select') {
+        return (
+            <div className="rtm-control-widget">
+                <Text style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>{param.name}</Text>
+                <Select
+                    size="small"
+                    value={String(param.value)}
+                    onChange={(v) => {
+                        const idx = config.options?.indexOf(v) ?? 0;
+                        setLocalValue(idx);
+                        setDirty(true);
+                    }}
+                    options={config.options?.map(o => ({ label: o.charAt(0).toUpperCase() + o.slice(1), value: o }))}
+                    style={{ width: '100%' }}
+                />
+                {dirty && (
+                    <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
+                        <InputNumber size="small" value={duration} onChange={(v) => setDuration(v ?? 10)} min={1} style={{ width: 60 }} addonAfter="s" />
+                        <Button size="small" type="primary" loading={isThisWriting} onClick={handleApply}
+                            style={{ background: BRAND_COLOR, borderColor: BRAND_COLOR, fontSize: 11 }}>Apply</Button>
+                        <Button size="small" onClick={() => setDirty(false)} style={{ fontSize: 11 }}>Cancel</Button>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    // Number type — slider + input
+    const unit = param.unit || '';
+    // Determine reasonable min/max for slider
+    const sliderMin = param.name.toLowerCase().includes('temp') ? 10 : 0;
+    const sliderMax = param.name.toLowerCase().includes('temp') ? 40 : (param.name.toLowerCase().includes('speed') ? 5 : 100);
+    return (
+        <div className="rtm-control-widget">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                <Text style={{ fontSize: 13 }}>{param.name}</Text>
+                <Text strong style={{ fontSize: 16, color: BRAND_COLOR }}>{localValue}{unit && <span style={{ fontSize: 10, color: '#8c8c8c' }}> {unit}</span>}</Text>
+            </div>
+            <Slider
+                min={sliderMin}
+                max={sliderMax}
+                step={param.name.toLowerCase().includes('speed') ? 1 : 0.5}
+                value={localValue}
+                onChange={(v) => { setLocalValue(v); setDirty(true); }}
+                styles={{ track: { background: BRAND_COLOR }, rail: { background: '#e8e8e8' } }}
+            />
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <InputNumber
+                    size="small"
+                    value={localValue}
+                    onChange={(v) => { setLocalValue(v ?? 0); setDirty(true); }}
+                    style={{ width: 80 }}
+                    addonAfter={unit || undefined}
+                />
+                <InputNumber size="small" value={duration} onChange={(v) => setDuration(v ?? 10)} min={1} style={{ width: 60 }} addonAfter="s" />
+                {dirty && (
+                    <>
+                        <Button size="small" type="primary" loading={isThisWriting} onClick={handleApply}
+                            style={{ background: BRAND_COLOR, borderColor: BRAND_COLOR, fontSize: 11 }}>Apply</Button>
+                        <Button size="small" onClick={() => { setLocalValue(numVal || 0); setDirty(false); }} style={{ fontSize: 11 }}>Cancel</Button>
+                    </>
+                )}
+            </div>
+        </div>
+    );
+};
+
+// 3.6. Sensor Display (read-only parameter in detail view)
+const SensorDisplay: React.FC<{ param: DeviceParameterData }> = ({ param }) => {
+    const category = getParamCategory(param);
+    const numVal = typeof param.value === 'string' ? parseFloat(param.value as string) : Number(param.value);
+    const hasValue = param.value !== null && param.value !== undefined && !isNaN(numVal);
+    const icon = getCategoryIcon(category);
+
+    return (
+        <div className="rtm-sensor-display" style={{
+            background: param.alarm ? '#fff2f0' : '#fff',
+            border: `1px solid ${param.alarm ? '#ffccc7' : '#f0f0f0'}`,
+            borderRadius: 10,
+            padding: '14px 16px',
+            textAlign: 'center',
+            transition: 'box-shadow 0.2s',
+        }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Text type="secondary" style={{ fontSize: 11 }}>{icon} {param.name}</Text>
+                {param.alarm && <Tag color="error" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px', marginRight: 0 }}>Alarm</Tag>}
+            </div>
+            {hasValue ? (
+                <ParamVisual param={param} />
+            ) : (
+                <Text style={{ fontSize: 20, color: '#d9d9d9' }}>--</Text>
+            )}
+            <Text type="secondary" style={{ fontSize: 9, display: 'block', marginTop: 4 }}>
+                {param.timestamp ? dayjs.unix(param.timestamp).format('MM/DD HH:mm:ss') : 'No data'}
+            </Text>
+        </div>
+    );
+};
+
+// 4. Main Page
+const RealTimeMonitor: React.FC = () => {
+    const [devices, setDevices] = useState<DeviceData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [loadingProgress, setLoadingProgress] = useState(0);
+    const [selectedDevice, setSelectedDevice] = useState<DeviceData | null>(null);
+    const [drawerVisible, setDrawerVisible] = useState(false);
+    const [mobileFilterVisible, setMobileFilterVisible] = useState(false);
+    const [editingParamId, setEditingParamId] = useState<number | null>(null);
+    const [editingValue, setEditingValue] = useState<number | null>(null);
+    const [editingDuration, setEditingDuration] = useState<number>(10);
+    const [writingParam, setWritingParam] = useState(false);
+    const [writingParamId, setWritingParamId] = useState<number | null>(null);
+    const [drawerSection, setDrawerSection] = useState<string | number>('sensors');
+
+    // Handler to write parameter value via API (used by legacy inline edit)
+    const handleWriteParam = useCallback(async (paramId: number, value: number | null, originalValue: number) => {
+        if (value === null || value === originalValue) {
+            setEditingParamId(null);
+            setEditingValue(null);
+            setEditingDuration(10);
+            return;
+        }
+        if (!selectedDevice) return;
+
+        setWritingParam(true);
+        setWritingParamId(paramId);
+        try {
+            await writeParameterValue(Number(selectedDevice.id), paramId, value, editingDuration);
+            message.success(`Parameter written: ${value} (duration: ${editingDuration}s)`);
+        } catch (err: any) {
+            message.error(`Write failed: ${err.message || 'Unknown error'}`);
+        } finally {
+            setWritingParam(false);
+            setWritingParamId(null);
+            setEditingParamId(null);
+            setEditingValue(null);
+            setEditingDuration(10);
+        }
+    }, [selectedDevice, editingDuration]);
+
+    // Handler for ControlWidget writes
+    const handleControlWrite = useCallback(async (paramId: number, value: number, duration: number) => {
+        if (!selectedDevice) return;
+        setWritingParam(true);
+        setWritingParamId(paramId);
+        try {
+            await writeParameterValue(Number(selectedDevice.id), paramId, value, duration);
+            message.success(`Parameter written: ${value} (duration: ${duration}s)`);
+        } catch (err: any) {
+            message.error(`Write failed: ${err.message || 'Unknown error'}`);
+        } finally {
+            setWritingParam(false);
+            setWritingParamId(null);
+        }
+    }, [selectedDevice]);
+
+    // Classify parameters for detail view sections
+    const { writableParams, readOnlyParams } = useMemo(() => {
+        const live = selectedDevice?.liveData || [];
+        const writable = live.filter(p => p.rw === 1 && writableConfigs[p.name]);
+        const readOnly = live.filter(p => !(p.rw === 1 && writableConfigs[p.name]));
+        return { writableParams: writable, readOnlyParams: readOnly };
+    }, [selectedDevice?.liveData]);
+    
+    const [filters, setFilters] = useState<FilterState>({
+        status: [],
+        alarm: [],
+        locations: [],
+        types: [],
+        freshness: 'all',
+        search: ''
+    });
+
+    // Loading progress animation
+    useEffect(() => {
+        let timer: ReturnType<typeof setInterval>;
+        if (loading) {
+            setLoadingProgress(0);
+            timer = setInterval(() => {
+                setLoadingProgress(prev => (prev >= 90 ? prev : prev + 5));
+            }, 100);
+        } else {
+            setLoadingProgress(100);
+        }
+        return () => clearInterval(timer);
+    }, [loading]);
+
+    const loadData = useCallback(async (silent = false) => {
+        if (!silent) setLoading(true);
+        try {
+            const data = await fetchDevices();
+            setDevices(data);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        let interval: ReturnType<typeof setInterval>;
+
+        const startPolling = () => {
+            // Clear existing to be safe
+            if (interval) clearInterval(interval);
+            interval = setInterval(() => {
+                if (!document.hidden) {
+                    loadData(true);
+                }
+            }, 1000);
+        };
+
+        // Initial load
+        loadData(false);
+        startPolling();
+
+        // Visibility change handler to pause/resume polling
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                clearInterval(interval);
+            } else {
+                loadData(true); // Immediate update when becoming visible
+                startPolling();
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+            clearInterval(interval);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [loadData]);
+
+    // Keep selectedDevice in sync with latest polled data
+    useEffect(() => {
+        if (selectedDevice) {
+            const updated = devices.find(d => d.id === selectedDevice.id);
+            if (updated) {
+                setSelectedDevice(updated);
+            }
+        }
+    }, [devices]);
+
+    // Clear editing state when drawer closes
+    useEffect(() => {
+        if (!drawerVisible) {
+            setEditingParamId(null);
+            setEditingValue(null);
+            setEditingDuration(10);
+        }
+    }, [drawerVisible]);
+
+    // Derived Data
+    const uniqueLocations = useMemo(() => Array.from(new Set(devices.map(d => d.location || 'Unknown'))).sort(), [devices]);
+    const uniqueTypes = useMemo(() => Array.from(new Set(devices.map(d => getDeviceType(d)))).sort(), [devices]);
+    
+    const facetCounts = useMemo(() => {
+        const locs: Record<string, number> = {};
+        const typs: Record<string, number> = {};
+        devices.forEach(d => {
+            const l = d.location || 'Unknown';
+            locs[l] = (locs[l] || 0) + 1;
+            const t = getDeviceType(d);
+            typs[t] = (typs[t] || 0) + 1;
+        });
+        return { locations: locs, types: typs };
+    }, [devices]);
+
+    const filteredDevices = useMemo(() => {
+        const result = devices.filter(d => {
+            // Search
+            if (filters.search) {
+                const q = filters.search.toLowerCase();
+                const matchName = d.name.toLowerCase().includes(q);
+                const matchLoc = d.location?.toLowerCase().includes(q);
+                const matchParam = d.liveData?.some(p => p.name.toLowerCase().includes(q));
+                if (!matchName && !matchLoc && !matchParam) return false;
+            }
+            // Status
+            if (filters.status.length > 0) {
+                const status = d.nwkStatus === 1 ? 'online' : 'offline';
+                if (!filters.status.includes(status)) return false;
+            }
+            // Alarm
+            if (filters.alarm.length > 0) {
+                const hasAlarm = d.liveData?.some(p => p.alarm);
+                const status = hasAlarm ? 'active' : 'normal';
+                if (!filters.alarm.includes(status)) return false;
+            }
+            // Location
+            if (filters.locations.length > 0 && !filters.locations.includes(d.location || 'Unknown')) return false;
+            // Type
+            if (filters.types.length > 0 && !filters.types.includes(getDeviceType(d))) return false;
+            // Freshness
+            if (filters.freshness !== 'all') {
+                const lastUpdate = d.liveData?.reduce((max, p) => Math.max(max, p.timestamp || 0), 0) || d.lastSeen || 0;
+                const status = getFreshnessStatus(lastUpdate);
+                if (filters.freshness === '1min' && status !== 'fresh') return false;
+                if (filters.freshness === '5min' && (status === 'stale')) return false; // fresh or recent
+                if (filters.freshness === 'stale' && status !== 'stale') return false;
+            }
+            return true;
+        });
+
+        // Sort: pin dev_id=1 (controller) first, then by last updated descending
+        result.sort((a, b) => {
+            const aIsController = (a.id as number) === 1;
+            const bIsController = (b.id as number) === 1;
+            if (aIsController && !bIsController) return -1;
+            if (!aIsController && bIsController) return 1;
+            const getLastUpdate = (d: DeviceData) => {
+                return d.liveData?.reduce((max, p) => Math.max(max, p.timestamp || 0), 0) || d.lastSeen || 0;
+            };
+            return getLastUpdate(b) - getLastUpdate(a);
+        });
+
+        return result;
+    }, [devices, filters]);
+
+    return (
+        <Layout style={{ height: 'calc(100vh - 140px)', background: '#ffffff' }}>
+            <Drawer
+                title="Filters"
+                placement="left"
+                onClose={() => setMobileFilterVisible(false)}
+                open={mobileFilterVisible}
+                width={280}
+            >
+                <FilterPanel 
+                    filters={filters} 
+                    onChange={setFilters} 
+                    locations={uniqueLocations} 
+                    types={uniqueTypes}
+                    counts={facetCounts}
+                />
+            </Drawer>
+
+            <Sider 
+                width={280} 
+                theme="light" 
+                style={{ overflowY: 'auto', borderRight: '1px solid #e8e8e8' }}
+                className="desktop-sider"
+                breakpoint="lg"
+                collapsedWidth="0"
+                trigger={null}
+            >
+                <FilterPanel 
+                    filters={filters} 
+                    onChange={setFilters} 
+                    locations={uniqueLocations} 
+                    types={uniqueTypes}
+                    counts={facetCounts}
+                />
+            </Sider>
+            
+            <Content style={{ padding: '24px', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {/* Header */}
+                <div style={{ flex: '0 0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                    <div>
+                        <Title level={3} style={{ margin: 0 }}>Sub-Device Monitoring</Title>
+                        <Text type="secondary">Real-time dashboard · {filteredDevices.length} sub-devices</Text>
+                    </div>
+                    <Space>
+                        <Button 
+                            icon={<FilterOutlined />} 
+                            onClick={() => setMobileFilterVisible(true)}
+                            className="mobile-filter-btn"
+                            style={{ display: 'none' }}
+                        >
+                            Filters
+                        </Button>
+                        <Input.Search 
+                            placeholder="Search sub-devices..." 
+                            style={{ width: 250 }} 
+                            onSearch={val => setFilters({...filters, search: val})}
+                            onChange={e => setFilters({...filters, search: e.target.value})}
+                        />
+                        <Button icon={<ReloadOutlined />} onClick={() => loadData(false)} loading={loading}>Refresh</Button>
+                    </Space>
+                </div>
+
+                {/* KPI Bar */}
+                {!loading && devices.length > 0 && <KpiBar devices={devices} />}
+
+                {/* Content */}
+                <div style={{ flex: '1 1 auto', overflowY: 'auto', overflowX: 'hidden', paddingRight: 4 }}>
+                {loading && devices.length === 0 ? (
+                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', minHeight: 300, flexDirection: 'column' }}>
+                        <Progress percent={loadingProgress} status="active" style={{ width: 300 }} showInfo={false} />
+                        <div style={{ marginTop: 10 }}>Loading Sub-Device Data...</div>
+                    </div>
+                ) : filteredDevices.length === 0 ? (
+                    <Empty description="No sub-devices match your filters" />
+                ) : (
+                    <div className="device-grid">
+                        {filteredDevices.map(device => (
+                            <DeviceCard key={device.id} device={device} onClick={() => { setSelectedDevice(device); setDrawerVisible(true); setDrawerSection('sensors'); }} />
+                        ))}
+                    </div>
+                )}
+                </div>
+            </Content>
+
+            {/* Detail Drawer - Full Width Dashboard */}
+            <Drawer
+                title={null}
+                placement="right"
+                width="100%"
+                onClose={() => setDrawerVisible(false)}
+                open={drawerVisible}
+                closable={false}
+                styles={{ body: { padding: 0, background: '#f5f7fa' } }}
+            >
+                {selectedDevice && (
+                    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                        {/* Sticky Header */}
+                        <div style={{
+                            padding: '10px 32px',
+                            background: 'linear-gradient(135deg, #003A70 0%, #005299 100%)',
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                                <Button
+                                    type="text"
+                                    icon={<span style={{ fontSize: 20, color: '#fff' }}>&times;</span>}
+                                    onClick={() => setDrawerVisible(false)}
+                                    style={{ padding: '0 4px', height: 32, lineHeight: '32px' }}
+                                />
+                                <div>
+                                    <Title level={4} style={{ margin: 0, color: '#fff' }}>
+                                        {String(selectedDevice.id)}. {selectedDevice.name}
+                                    </Title>
+                                    <Space size={8} style={{ marginTop: 4 }}>
+                                        <Tag color={selectedDevice.nwkStatus === 1 ? 'success' : 'error'}>
+                                            {selectedDevice.nwkStatus === 1 ? <><WifiOutlined /> Online</> : <><DisconnectOutlined /> Offline</>}
+                                        </Tag>
+                                        {selectedDevice.liveData?.some(p => p.alarm)
+                                            ? <Tag color="error"><AlertOutlined /> Alarm Active</Tag>
+                                            : <Tag color="default"><CheckCircleOutlined /> Normal</Tag>
+                                        }
+                                        {selectedDevice.modelName && <Tag style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff' }}>{selectedDevice.modelName}</Tag>}
+                                    </Space>
+                                </div>
+                            </div>
+                            <Space size={20}>
+                                <div style={{ textAlign: 'right' }}>
+                                    <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', display: 'block' }}>
+                                        <EnvironmentOutlined /> {selectedDevice.location || 'N/A'}
+                                    </Text>
+                                    <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>
+                                        <ClockCircleOutlined /> {(() => {
+                                            const t = selectedDevice.liveData?.reduce((max, p) => Math.max(max, p.timestamp || 0), 0) || selectedDevice.lastSeen || 0;
+                                            return t ? dayjs.unix(t).format('YYYY-MM-DD HH:mm:ss') : 'Never';
+                                        })()}
+                                    </Text>
+                                </div>
+                            </Space>
+                        </div>
+
+                        {/* Section Tabs */}
+                        <div style={{ background: '#fff', padding: '12px 32px 0', borderBottom: '1px solid #e8e8e8' }}>
+                            <Segmented
+                                value={drawerSection}
+                                onChange={setDrawerSection}
+                                options={[
+                                    { label: <span><AppstoreOutlined /> Sensors ({readOnlyParams.length})</span>, value: 'sensors' },
+                                    { label: <span><ControlOutlined /> Controls ({writableParams.length})</span>, value: 'controls' },
+                                    { label: <span><LineChartOutlined /> Trends</span>, value: 'trends' },
+                                ]}
+                                size="large"
+                                style={{ marginBottom: -1 }}
+                            />
+                        </div>
+
+                        {/* Scrollable Body */}
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px' }}>
+
+                            {/* Sensors Section */}
+                            {drawerSection === 'sensors' && (
+                                <div>
+                                    {readOnlyParams.length > 0 ? (
+                                        <div className="rtm-sensor-grid">
+                                            {readOnlyParams.map((param, idx) => (
+                                                <SensorDisplay key={`${param.id}_${idx}`} param={param} />
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <Empty description="No sensor parameters" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Controls Section */}
+                            {drawerSection === 'controls' && (
+                                <div>
+                                    {writableParams.length > 0 ? (
+                                        <Row gutter={[16, 16]}>
+                                            {writableParams.map((param, idx) => (
+                                                <Col xs={24} sm={12} md={8} lg={6} key={`ctrl_${param.id}_${idx}`}>
+                                                    <ControlWidget
+                                                        param={param}
+                                                        onWrite={handleControlWrite}
+                                                        writing={writingParam}
+                                                        writingParamId={writingParamId}
+                                                    />
+                                                </Col>
+                                            ))}
+                                        </Row>
+                                    ) : (
+                                        <Empty description="No writable parameters for this device" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                                    )}
+
+                                    {/* Legacy inline edit for RW params not in writableConfigs */}
+                                    {(() => {
+                                        const legacyRw = (selectedDevice.liveData || []).filter(p => p.rw === 1 && !writableConfigs[p.name]);
+                                        if (legacyRw.length === 0) return null;
+                                        return (
+                                            <>
+                                                <Divider orientation="left" style={{ fontSize: 13, color: '#8c8c8c' }}>Other Writable Parameters</Divider>
+                                                <Row gutter={[8, 8]}>
+                                                    {legacyRw.map((item, idx) => (
+                                                        <Col xs={12} sm={8} md={6} key={`legacy_${item.id}_${idx}`}>
+                                                            <div style={{
+                                                                background: item.alarm ? '#fff2f0' : '#fff',
+                                                                border: `1px solid ${item.alarm ? '#ffccc7' : '#f0f0f0'}`,
+                                                                borderRadius: 8,
+                                                                padding: '10px 12px',
+                                                            }}>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                                                                    <Text type="secondary" style={{ fontSize: 11 }}>{item.name}</Text>
+                                                                    <Tooltip title="Edit value">
+                                                                        <EditOutlined
+                                                                            style={{ fontSize: 12, color: BRAND_COLOR, cursor: 'pointer' }}
+                                                                            onClick={() => { setEditingParamId(item.id); setEditingValue(Number(item.value)); }}
+                                                                        />
+                                                                    </Tooltip>
+                                                                </div>
+                                                                {editingParamId === item.id ? (
+                                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                                        <InputNumber
+                                                                            size="small" value={editingValue}
+                                                                            onChange={(val) => setEditingValue(val as number)}
+                                                                            disabled={writingParam}
+                                                                            onPressEnter={() => handleWriteParam(item.id, editingValue, Number(item.value))}
+                                                                            style={{ width: '100%' }} autoFocus placeholder="Value"
+                                                                        />
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                                                            <InputNumber
+                                                                                size="small" value={editingDuration}
+                                                                                onChange={(val) => setEditingDuration(val as number ?? 10)}
+                                                                                disabled={writingParam} min={1}
+                                                                                onPressEnter={() => handleWriteParam(item.id, editingValue, Number(item.value))}
+                                                                                style={{ flex: 1 }} placeholder="Duration" addonAfter="s"
+                                                                            />
+                                                                            <Button size="small" type="primary" loading={writingParam}
+                                                                                onClick={() => handleWriteParam(item.id, editingValue, Number(item.value))}
+                                                                                style={{ fontSize: 11, padding: '0 6px' }}>OK</Button>
+                                                                            <Button size="small" disabled={writingParam}
+                                                                                onClick={() => { setEditingParamId(null); setEditingValue(null); setEditingDuration(10); }}
+                                                                                style={{ fontSize: 11, padding: '0 6px' }}>Cancel</Button>
+                                                                        </div>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 3 }}>
+                                                                        <Text strong style={{ fontSize: 16, color: item.alarm ? '#cf1322' : '#000' }}>
+                                                                            {item.value !== null && item.value !== undefined ? item.value : '--'}
+                                                                        </Text>
+                                                                        <Text type="secondary" style={{ fontSize: 10 }}>{item.unit}</Text>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </Col>
+                                                    ))}
+                                                </Row>
+                                            </>
+                                        );
+                                    })()}
+                                </div>
+                            )}
+
+                            {/* Trends Section */}
+                            {drawerSection === 'trends' && selectedDevice.liveData && selectedDevice.liveData.length > 0 && (
+                                <div>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                                        <Text strong style={{ fontSize: 14 }}><LineChartOutlined /> Trend Charts</Text>
+                                        <Text type="secondary" style={{ fontSize: 11 }}>All data points preserved · Auto-refresh every 5s</Text>
+                                    </div>
+                                    <Row gutter={16}>
+                                        <Col span={12}>
+                                            <ParamChart
+                                                key={`${selectedDevice.id}_0`}
+                                                deviceId={selectedDevice.id}
+                                                params={selectedDevice.liveData}
+                                                chartIndex={0}
+                                                liveData={selectedDevice.liveData}
+                                            />
+                                        </Col>
+                                        <Col span={12}>
+                                            <ParamChart
+                                                key={`${selectedDevice.id}_1`}
+                                                deviceId={selectedDevice.id}
+                                                params={selectedDevice.liveData}
+                                                chartIndex={1}
+                                                liveData={selectedDevice.liveData}
+                                            />
+                                        </Col>
+                                    </Row>
+                                </div>
+                            )}
+
+                        </div>
+                    </div>
+                )}
+            </Drawer>
+            <style>{`
+                .device-grid {
+                    display: grid;
+                    gap: 16px;
+                    grid-template-columns: repeat(1, 1fr);
+                }
+                @media (min-width: 576px) { .device-grid { grid-template-columns: repeat(2, 1fr); } }
+                @media (min-width: 768px) { .device-grid { grid-template-columns: repeat(3, 1fr); } }
+                @media (min-width: 992px) { .device-grid { grid-template-columns: repeat(4, 1fr); } }
+                @media (min-width: 1300px) { .device-grid { grid-template-columns: repeat(5, 1fr); } }
+
+                @media (max-width: 992px) {
+                    .desktop-sider { display: none !important; }
+                    .mobile-filter-btn { display: inline-flex !important; }
+                }
+
+                /* Anchor G2 tooltip — prevent random flipping */
+                .g2-tooltip {
+                    pointer-events: none !important;
+                    transition: left 0.05s ease, top 0.05s ease !important;
+                }
+
+                /* Visual device card hover */
+                .rtm-device-card {
+                    transition: transform 0.2s ease, box-shadow 0.2s ease !important;
+                }
+                .rtm-device-card:hover {
+                    transform: translateY(-3px) !important;
+                    box-shadow: 0 8px 24px rgba(0, 58, 112, 0.12) !important;
+                }
+
+                /* Control widget card */
+                .rtm-control-widget {
+                    background: #fff;
+                    border: 1px solid #f0f0f0;
+                    border-radius: 10px;
+                    padding: 14px 16px;
+                    transition: box-shadow 0.2s;
+                    height: 100%;
+                }
+                .rtm-control-widget:hover {
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                }
+
+                /* Sensor grid */
+                .rtm-sensor-grid {
+                    display: grid;
+                    gap: 12px;
+                    grid-template-columns: repeat(2, 1fr);
+                }
+                @media (min-width: 768px) { .rtm-sensor-grid { grid-template-columns: repeat(3, 1fr); } }
+                @media (min-width: 992px) { .rtm-sensor-grid { grid-template-columns: repeat(4, 1fr); } }
+                @media (min-width: 1400px) { .rtm-sensor-grid { grid-template-columns: repeat(5, 1fr); } }
+
+                /* Sensor display hover */
+                .rtm-sensor-display:hover {
+                    box-shadow: 0 4px 12px rgba(0, 58, 112, 0.08);
+                }
+
+                /* Segmented control styling */
+                .ant-segmented-item-selected {
+                    color: #003A70 !important;
+                }
+            `}</style>
+        </Layout>
+    );
+};
+
+export default RealTimeMonitor;

@@ -1,0 +1,365 @@
+import React, { useState } from 'react';
+import { Modal, Card, Row, Col, Space, Typography, DatePicker, Button } from 'antd';
+import { LineChartOutlined, DownloadOutlined, CloseOutlined } from '@ant-design/icons';
+import type { Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
+
+const { RangePicker } = DatePicker;
+
+interface RuleViewDataProps {
+	visible: boolean;
+	ruleData: {
+		key: string;
+		ruleName: string;
+		deviceType: string;
+		targetDevice: string;
+		triggerSetting: string;
+		createTime: string;
+		status: 'enabled' | 'disabled';
+		enabled: boolean;
+		// Additional fields for view data
+		conditions?: Array<{
+			name: string;
+			type: string;
+			device: string;
+			parameter: string;
+			operator: string;
+			value: number;
+		}>;
+		controls?: Array<{
+			name: string;
+			type: string;
+			device: string;
+			parameter: string;
+			value: number | string;
+		}>;
+	} | null;
+	onClose: () => void;
+}
+
+const RuleViewData: React.FC<RuleViewDataProps> = ({ visible, ruleData, onClose }) => {
+	const [dateRangeEn, setDateRangeEn] = useState<[Dayjs, Dayjs] | null>([dayjs().subtract(24, 'hour'), dayjs()]);
+	const [dateRangeTrigger, setDateRangeTrigger] = useState<[Dayjs, Dayjs] | null>([dayjs().subtract(24, 'hour'), dayjs()]);
+
+	if (!ruleData) return null;
+
+	const handleExportEnStatus = () => {
+		const exportData = {
+			ruleName: ruleData.ruleName,
+			chartType: 'Enable Status',
+			status: ruleData.enabled ? 'Enabled' : 'Disabled',
+			dateRange: dateRangeEn ? {
+				start: dateRangeEn[0].format('YYYY-MM-DD HH:mm'),
+				end: dateRangeEn[1].format('YYYY-MM-DD HH:mm'),
+			} : null,
+			exportTime: new Date().toLocaleString(),
+		};
+		
+		const jsonString = JSON.stringify(exportData, null, 2);
+		const blob = new Blob([jsonString], { type: 'application/json' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = `${ruleData.ruleName}_enable_status_${new Date().getTime()}.json`;
+		document.body.appendChild(link);
+		link.click();
+		document.body.removeChild(link);
+		URL.revokeObjectURL(url);
+	};
+
+	const handleExportTriggerStatus = () => {
+		const exportData = {
+			ruleName: ruleData.ruleName,
+			chartType: 'Trigger Status',
+			triggerSetting: ruleData.triggerSetting,
+			dateRange: dateRangeTrigger ? {
+				start: dateRangeTrigger[0].format('YYYY-MM-DD HH:mm'),
+				end: dateRangeTrigger[1].format('YYYY-MM-DD HH:mm'),
+			} : null,
+			exportTime: new Date().toLocaleString(),
+		};
+		
+		const jsonString = JSON.stringify(exportData, null, 2);
+		const blob = new Blob([jsonString], { type: 'application/json' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = `${ruleData.ruleName}_trigger_status_${new Date().getTime()}.json`;
+		document.body.appendChild(link);
+		link.click();
+		document.body.removeChild(link);
+		URL.revokeObjectURL(url);
+	};
+
+	return (
+		<Modal
+			title={
+				<Typography.Title level={4} style={{ margin: 0 }}>
+					Rule Data View: {ruleData.ruleName}
+				</Typography.Title>
+			}
+		open={visible}
+		onCancel={onClose}
+		width="95%"
+		style={{ top: 20, maxHeight: 'calc(100vh - 40px)' }}
+		zIndex={1050}
+		bodyStyle={{ padding: '24px', maxHeight: 'calc(100vh - 140px)', overflow: 'auto' }}
+		footer={null}
+		closeIcon={<CloseOutlined />}
+		>
+			{/* Basic Information Card */}
+			<Card
+					title="Basic Information"
+					bordered
+					style={{ marginBottom: 16 }}
+					bodyStyle={{ padding: '16px' }}
+				>
+				<Row gutter={[24, 16]}>
+					{/* First Row - 5 fields */}
+					<Col span={5}>
+						<Space direction="vertical" size={4}>
+							<Typography.Text type="secondary" style={{ fontSize: 12 }}>Rule Name</Typography.Text>
+							<Typography.Text strong>{ruleData.ruleName}</Typography.Text>
+						</Space>
+					</Col>
+					<Col span={5}>
+						<Space direction="vertical" size={4}>
+							<Typography.Text type="secondary" style={{ fontSize: 12 }}>Target Device</Typography.Text>
+							<Typography.Text strong>{ruleData.targetDevice}</Typography.Text>
+						</Space>
+					</Col>
+					<Col span={5}>
+						<Space direction="vertical" size={4}>
+							<Typography.Text type="secondary" style={{ fontSize: 12 }}>Create Time</Typography.Text>
+							<Typography.Text strong>{ruleData.createTime}</Typography.Text>
+						</Space>
+					</Col>
+					<Col span={5}>
+						<Space direction="vertical" size={4}>
+							<Typography.Text type="secondary" style={{ fontSize: 12 }}>Current Status</Typography.Text>
+							<Typography.Text strong style={{ color: ruleData.enabled ? '#52c41a' : '#999' }}>
+								{ruleData.enabled ? 'Enabled' : 'Disabled'}
+							</Typography.Text>
+						</Space>
+					</Col>
+					<Col span={4}>
+						<Space direction="vertical" size={4}>
+							<Typography.Text type="secondary" style={{ fontSize: 12 }}>Trigger Setting</Typography.Text>
+							<Typography.Text strong style={{ color: ruleData.triggerSetting === 'Active' ? '#ff4d4f' : '#999' }}>
+								{ruleData.triggerSetting}
+							</Typography.Text>
+						</Space>
+					</Col>
+
+					{/* Second Row - Device Type only */}
+					<Col span={24}>
+						<Space direction="vertical" size={4}>
+							<Typography.Text type="secondary" style={{ fontSize: 12 }}>Device Type</Typography.Text>
+							<Typography.Text strong>{ruleData.deviceType}</Typography.Text>
+						</Space>
+					</Col>
+				</Row>
+			</Card>				{/* Main Content - Parameters and Charts */}
+				<Row gutter={16}>
+					{/* Left: Parameters Panel (Black Box) */}
+					<Col span={8}>
+						<Card 
+							title="Rule Parameters" 
+							bordered
+							style={{ height: '600px', backgroundColor: '#000', color: '#fff' }}
+							headStyle={{ backgroundColor: '#1a1a1a', color: '#fff', borderBottom: '1px solid #333' }}
+							bodyStyle={{ 
+								padding: '16px',
+								height: 'calc(100% - 57px)',
+								overflow: 'auto',
+								backgroundColor: '#000'
+							}}
+						>
+							<Space direction="vertical" size={16} style={{ width: '100%' }}>
+								{/* Conditions Section */}
+								<div>
+									<Typography.Text strong style={{ color: '#1890ff', fontSize: 14, display: 'block', marginBottom: 12 }}>
+										TRIGGER CONDITIONS
+									</Typography.Text>
+									{ruleData.conditions && ruleData.conditions.length > 0 ? (
+										<Space direction="vertical" size={8} style={{ width: '100%' }}>
+											{ruleData.conditions.map((condition, index) => (
+												<Card
+													key={index}
+													size="small"
+													style={{ 
+														backgroundColor: '#1a1a1a',
+														border: '1px solid #333'
+													}}
+													bodyStyle={{ padding: '12px' }}
+												>
+													<Space direction="vertical" size={4} style={{ width: '100%' }}>
+														<Typography.Text style={{ color: '#52c41a', fontSize: 11, textTransform: 'uppercase' }}>
+															Condition {index + 1}: {condition.name}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#fff', fontSize: 13 }}>
+															<strong>Type:</strong> {condition.type}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#fff', fontSize: 13 }}>
+															<strong>Device:</strong> {condition.device}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#fff', fontSize: 13 }}>
+															<strong>Parameter:</strong> {condition.parameter}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#faad14', fontSize: 14 }}>
+															<strong>{condition.operator} {condition.value}</strong>
+														</Typography.Text>
+													</Space>
+												</Card>
+											))}
+										</Space>
+									) : (
+										<Typography.Text style={{ color: '#888' }}>No conditions defined</Typography.Text>
+									)}
+								</div>
+
+								{/* Controls Section */}
+								<div>
+									<Typography.Text strong style={{ color: '#1890ff', fontSize: 14, display: 'block', marginBottom: 12 }}>
+										CONTROL ACTIONS
+									</Typography.Text>
+									{ruleData.controls && ruleData.controls.length > 0 ? (
+										<Space direction="vertical" size={8} style={{ width: '100%' }}>
+											{ruleData.controls.map((control, index) => (
+												<Card
+													key={index}
+													size="small"
+													style={{ 
+														backgroundColor: '#1a1a1a',
+														border: '1px solid #333'
+													}}
+													bodyStyle={{ padding: '12px' }}
+												>
+													<Space direction="vertical" size={4} style={{ width: '100%' }}>
+														<Typography.Text style={{ color: '#52c41a', fontSize: 11, textTransform: 'uppercase' }}>
+															Action {index + 1}: {control.name}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#fff', fontSize: 13 }}>
+															<strong>Type:</strong> {control.type}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#fff', fontSize: 13 }}>
+															<strong>Device:</strong> {control.device}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#fff', fontSize: 13 }}>
+															<strong>Parameter:</strong> {control.parameter}
+														</Typography.Text>
+														<Typography.Text style={{ color: '#faad14', fontSize: 14 }}>
+															<strong>Value: {control.value}</strong>
+														</Typography.Text>
+													</Space>
+												</Card>
+											))}
+										</Space>
+									) : (
+										<Typography.Text style={{ color: '#888' }}>No control actions defined</Typography.Text>
+									)}
+								</div>
+							</Space>
+						</Card>
+					</Col>
+
+					{/* Right: Two Chart Panels */}
+					<Col span={16}>
+						<Space direction="vertical" size={16} style={{ width: '100%' }}>
+							{/* Chart 1: Enable Status (EN) */}
+							<Card 
+								title={
+									<Space>
+										<LineChartOutlined />
+										<span>Enable Status History (EN)</span>
+										<Button 
+											type="primary" 
+											size="small"
+											icon={<DownloadOutlined />}
+											onClick={handleExportEnStatus}
+											style={{ marginLeft: 8 }}
+										>
+											Export Data
+										</Button>
+									</Space>
+								}
+								bordered
+								style={{ height: '292px' }}
+								bodyStyle={{ padding: '16px', height: 'calc(100% - 57px)' }}
+								extra={
+									<RangePicker
+										size="small"
+										showTime={{ format: 'HH:mm' }}
+										format="YYYY-MM-DD HH:mm"
+										value={dateRangeEn}
+										onChange={(dates) => setDateRangeEn(dates as [Dayjs, Dayjs] | null)}
+										style={{ width: 320 }}
+									/>
+								}
+							>
+								<div style={{ 
+									height: '100%', 
+									display: 'flex', 
+									alignItems: 'center', 
+									justifyContent: 'center',
+									border: '2px solid #f0f0f0',
+									borderRadius: '4px',
+									backgroundColor: '#fafafa'
+								}}>
+									<Typography.Text type="secondary">
+										Enable/Disable status timeline chart will be displayed here
+									</Typography.Text>
+								</div>
+							</Card>
+
+							{/* Chart 2: Trigger Status */}
+							<Card 
+								title={
+									<Space>
+										<LineChartOutlined />
+										<span>Trigger Status History</span>
+										<Button 
+											type="primary" 
+											size="small"
+											icon={<DownloadOutlined />}
+											onClick={handleExportTriggerStatus}
+											style={{ marginLeft: 8 }}
+										>
+											Export Data
+										</Button>
+									</Space>
+								}
+								bordered
+								style={{ height: '292px' }}
+								bodyStyle={{ padding: '16px', height: 'calc(100% - 57px)' }}
+								extra={
+									<RangePicker
+										size="small"
+										showTime={{ format: 'HH:mm' }}
+										format="YYYY-MM-DD HH:mm"
+										value={dateRangeTrigger}
+										onChange={(dates) => setDateRangeTrigger(dates as [Dayjs, Dayjs] | null)}
+										style={{ width: 320 }}
+									/>
+								}
+							>
+								<div style={{ 
+									height: '100%', 
+									display: 'flex', 
+									alignItems: 'center', 
+									justifyContent: 'center',
+									border: '2px solid #f0f0f0',
+									borderRadius: '4px',
+									backgroundColor: '#fafafa'
+								}}>
+								<Typography.Text type="secondary">
+									Active/Inactive trigger timeline chart will be displayed here
+								</Typography.Text>
+							</div>
+						</Card>
+					</Space>
+				</Col>
+			</Row>
+		</Modal>
+	);
+};export default RuleViewData;
