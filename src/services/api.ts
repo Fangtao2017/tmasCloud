@@ -118,6 +118,28 @@ export async function getLatestByDevice(
   );
 }
 
+// ── Device Groups ─────────────────────────────────────────
+
+export interface DeviceGroupRecord {
+  id: string;
+  name: string;
+  color: string;
+  deviceIds: string[];
+  collapsed?: boolean;
+}
+
+export async function getDeviceGroups(gatewayId: string): Promise<DeviceGroupRecord[]> {
+  return request<DeviceGroupRecord[]>(`/api/gateways/${gatewayId}/groups`);
+}
+
+export async function putDeviceGroups(gatewayId: string, groups: DeviceGroupRecord[]): Promise<DeviceGroupRecord[]> {
+  return request<DeviceGroupRecord[]>(`/api/gateways/${gatewayId}/groups`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(groups),
+  });
+}
+
 // ── T8000 Config Write ────────────────────────────────────
 
 export interface ConfigWritePayload {

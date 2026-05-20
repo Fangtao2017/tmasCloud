@@ -22,9 +22,11 @@ import {
 import { Badge, Button, Card, Checkbox, Col, Collapse, ColorPicker, Drawer, Empty, Input, Layout, Popconfirm, Progress, Row, Select, Space, Spin, Statistic, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useGatewayData, getSiteById, getTenantById, sites, getStatsFromGateways } from '../hooks/useGatewayData';
+import { useGatewayData, getTenantById, getStatsFromGateways, useSites } from '../hooks/useGatewayData';
 import type { LatestPointValue } from '../hooks/useGatewayData';
 import type { CloudGateway, CloudSubDevice } from '../data/cloudData';
+import { getDeviceGroups, putDeviceGroups } from '../services/api';
+import type { DeviceGroupRecord } from '../services/api';
 import { DeviceDetailDrawer } from '../components/DeviceDetailDrawer';
 import { DevStatusModal } from '../components/DevStatusModal';
 import './RealTimeMonitor.css';
@@ -54,20 +56,6 @@ interface DeviceGroup {
 }
 
 const GROUP_COLORS = ['#003A70', '#52c41a', '#1890ff', '#722ed1', '#eb2f96', '#fa8c16', '#13c2c2', '#2f54eb'];
-
-/** Persist groups per gateway to localStorage */
-const GROUPS_STORAGE_KEY = (gatewayId: string) => `tmas_cloud_groups_${gatewayId}`;
-
-const loadGroups = (gatewayId: string): DeviceGroup[] => {
-	try {
-		const raw = localStorage.getItem(GROUPS_STORAGE_KEY(gatewayId));
-		return raw ? (JSON.parse(raw) as DeviceGroup[]) : [];
-	} catch { return []; }
-};
-
-const saveGroups = (gatewayId: string, groups: DeviceGroup[]): void => {
-	try { localStorage.setItem(GROUPS_STORAGE_KEY(gatewayId), JSON.stringify(groups)); } catch { /* ignore */ }
-};
 
 const getGatewayTone = (status: CloudGateway['status']) => {
 	if (status === 'online') return 'success';
@@ -737,23 +725,37 @@ const GatewayDetailView: React.FC<{
 	const activeFilterCount =
 		filters.status.length + filters.alarm.length + filters.zones.length + filters.types.length;
 
-	// ── Groups state (localStorage-persisted per gateway) ──
-	const [deviceGroups, setDeviceGroups] = React.useState<DeviceGroup[]>(() => loadGroups(gateway.id));
+	// ── Groups state (DB-persisted per gateway) ─────────────
+	const [deviceGroups, setDeviceGroups] = React.useState<DeviceGroup[]>([]);
 	const [groupManagerOpen, setGroupManagerOpen] = React.useState(false);
 	const [viewMode, setViewMode] = React.useState<'flat' | 'grouped'>('flat');
+
+	// Load groups from backend; auto-switch to grouped view if any exist
+	useEffect(() => {
+		getDeviceGroups(gateway.id)
+			.then((groups) => {
+				const mapped: DeviceGroup[] = groups.map((g: DeviceGroupRecord) => ({
+					id: g.id, name: g.name, color: g.color,
+					deviceIds: g.deviceIds, collapsed: !!g.collapsed,
+				}));
+				setDeviceGroups(mapped);
+				if (mapped.length > 0) setViewMode('grouped');
+			})
+			.catch(() => { /* keep empty */ });
+	}, [gateway.id]);
 
 	// ── Device detail drawer state ──
 	const [selectedDevice, setSelectedDevice] = useState<CloudSubDevice | null>(null);
 
 	const handleGroupsChange = useCallback((updated: DeviceGroup[]) => {
 		setDeviceGroups(updated);
-		saveGroups(gateway.id, updated);
+		putDeviceGroups(gateway.id, updated).catch(() => {});
 	}, [gateway.id]);
 
 	const toggleGroupCollapse = useCallback((groupId: string) => {
 		setDeviceGroups(prev => {
 			const updated = prev.map(g => g.id === groupId ? { ...g, collapsed: !g.collapsed } : g);
-			saveGroups(gateway.id, updated);
+			putDeviceGroups(gateway.id, updated).catch(() => {});
 			return updated;
 		});
 	}, [gateway.id]);
@@ -799,14 +801,13 @@ const GatewayDetailView: React.FC<{
 					>
 						Groups{deviceGroups.length > 0 && ` (${deviceGroups.length})`}
 					</Button>
-					{deviceGroups.length > 0 && (
-						<Button
-							icon={viewMode === 'grouped' ? <AppstoreOutlined /> : <FolderOutlined />}
-							onClick={() => setViewMode(v => v === 'flat' ? 'grouped' : 'flat')}
-						>
-							{viewMode === 'grouped' ? 'Flat View' : 'Grouped View'}
-						</Button>
-					)}
+					<Button
+						icon={viewMode === 'grouped' ? <AppstoreOutlined /> : <FolderOutlined />}
+						onClick={() => setViewMode(v => v === 'flat' ? 'grouped' : 'flat')}
+						style={deviceGroups.length === 0 ? { borderColor: '#ff4d4f', color: '#ff4d4f' } : {}}
+					>
+						{viewMode === 'grouped' ? 'Flat View' : 'Grouped View'}
+					</Button>
 					<Button icon={<ReloadOutlined />} onClick={onRefresh}>Refresh</Button>
 				</div>
 			</div>
@@ -899,6 +900,11 @@ const RealTimeMonitor: React.FC = () => {
 	const navigate = useNavigate();
 	const { gatewayId } = useParams<{ gatewayId: string }>();
 	const { gateways: cloudGateways, pointsByDevice, loading, refresh } = useGatewayData();
+	const apiSites = useSites();
+	const getSiteById = useCallback(
+		(siteId: string) => apiSites.find((s) => String(s.id) === siteId),
+		[apiSites],
+	);
 	const stats = React.useMemo(() => getStatsFromGateways(cloudGateways), [cloudGateways]);
 
 	// Fleet-level state
@@ -924,7 +930,7 @@ const RealTimeMonitor: React.FC = () => {
 
 			return matchesSite && matchesStatus && matchesQuery;
 		});
-	}, [cloudGateways, search, siteId, statusFilter]);
+	}, [cloudGateways, search, siteId, statusFilter, getSiteById]);
 
 	const selectedGateway = React.useMemo(() => {
 		if (!gatewayId) return null;
@@ -1033,7 +1039,7 @@ const RealTimeMonitor: React.FC = () => {
 							<Select
 								value={siteId}
 								onChange={setSiteId}
-								options={[{ value: 'all', label: 'All sites' }, ...sites.map((site) => ({ value: site.id, label: site.name }))]}
+								options={[{ value: 'all', label: 'All sites' }, ...apiSites.map((site) => ({ value: String(site.id), label: site.name }))]}
 							/>
 							<Select
 								value={statusFilter}

@@ -17,6 +17,7 @@ import SettingsModbus from "./pages/Modbus";
 import SettingsSystem from "./pages/settings/System";
 import Login from "./pages/Login";
 import UserManagement from "./pages/UserManagement";
+import AdminPanel from "./pages/AdminPanel";
 
 const App: React.FC = () => {
 return (
@@ -74,6 +75,7 @@ return (
 		<Route path="account" element={<Account />} />
 		<Route path="account/details" element={<AccountDetails />} />
 		<Route path="user-management" element={<UserManagement />} />
+		<Route path="admin" element={<AdminPanel />} />
 
 		<Route path="*" element={<Navigate to="/" replace />} />
 	</Route>

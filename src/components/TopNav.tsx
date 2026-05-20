@@ -36,7 +36,7 @@ const TopNav: React.FC = () => {
     } else if (key === 'profile') {
       navigate(getPath('/account'));
     } else if (key === 'user-management') {
-      navigate(getPath('/user-management'));
+      navigate(role === 'admin' ? '/admin' : '/user-management');
     } else if (key === 'settings') {
       navigate(getPath('/settings'));
     } else if (key === 'logout') {
@@ -62,10 +62,10 @@ const TopNav: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <Typography.Text strong style={{ fontSize: 16, lineHeight: 1.2, color: '#001B34' }}>
-                {user?.displayName || 'Guest'}
+                {user?.displayName || user?.username || 'Guest'}
               </Typography.Text>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {user?.email || ''}
+                {user?.username || ''}
               </Typography.Text>
             </div>
             
@@ -101,7 +101,7 @@ const TopNav: React.FC = () => {
       icon: <SafetyCertificateOutlined style={{ fontSize: 16, width: 16 }} />,
       style: { padding: '10px 24px', fontSize: 14 }
     },
-    ...(role === 'admin' ? [
+    ...(role === 'admin' || role === 'site_admin' ? [
       {
         key: 'user-management',
         label: 'User Management',

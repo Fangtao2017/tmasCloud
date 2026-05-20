@@ -97,7 +97,7 @@ interface Filters {
 
 const sites = ['Temasek Polytechnic', 'ITE College East', 'Republic Polytechnic', 'Ngee Ann Polytechnic'];
 
-const API_BASE = 'http://192.168.10.73:3000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const severityColors: Record<Severity, string> = {
   critical: 'red',
@@ -154,29 +154,6 @@ function mqttEntryToRecord(item: Record<string, unknown>): LogRecord {
     messageId: `MQTT-${item.id}`,
     payload: { mode, itemCount: item.itemCount, gatewaySn: sn, error: item.error },
     timeline: [{ at: ts, event: hasError ? 'Error' : 'Received' }],
-    pinned: false,
-  };
-}
-
-// Map system log entry to LogRecord
-function sysEntryToRecord(item: Record<string, unknown>): LogRecord {
-  const ts = Number(item.timestamp);
-  const level = String(item.level || 'info');
-  return {
-    id: `sys-${item.id}`,
-    timestamp: ts,
-    severity: level === 'error' ? 'error' : level === 'warning' ? 'warning' : 'info',
-    type: 'System',
-    site: '',
-    gateway: 'Backend',
-    device: '–',
-    summary: String(item.message || ''),
-    status: 'active',
-    module: 'system',
-    topic: 'system',
-    messageId: `SYS-${item.id}`,
-    payload: { level, message: item.message },
-    timeline: [{ at: ts, event: level }],
     pinned: false,
   };
 }
@@ -265,17 +242,15 @@ const LogsCenter: React.FC = () => {
       const [start, end] = toTimeRange(filters.time, filters.customRange);
       const qs = `start=${start}&end=${end}&limit=500`;
 
-      const [evtRes, mqttRes, sysRes] = await Promise.all([
-        fetch(`${API_BASE}/api/logs/events?${qs}`).then((r) => r.json()),
-        fetch(`${API_BASE}/api/logs/mqtt?${qs}`).then((r) => r.json()),
-        fetch(`${API_BASE}/api/logs/system?limit=200`).then((r) => r.json()),
+      const [evtRes, mqttRes] = await Promise.all([
+        fetch(`${API_BASE}/api/logs/events?${qs}`, { credentials: 'include' }).then((r) => r.json()),
+        fetch(`${API_BASE}/api/logs/mqtt?${qs}`, { credentials: 'include' }).then((r) => r.json()),
       ]);
 
       const eventLogs: LogRecord[] = ((evtRes.logs ?? []) as Record<string, unknown>[]).map(apiEventToRecord);
       const mqttLogs: LogRecord[] = ((mqttRes.logs ?? []) as Record<string, unknown>[]).map(mqttEntryToRecord);
-      const sysLogs: LogRecord[] = ((sysRes.logs ?? []) as Record<string, unknown>[]).map(sysEntryToRecord);
 
-      const merged = [...eventLogs, ...mqttLogs, ...sysLogs].sort((a, b) => b.timestamp - a.timestamp);
+      const merged = [...eventLogs, ...mqttLogs].sort((a, b) => b.timestamp - a.timestamp);
       setLogs(merged);
     } catch (err) {
       console.error('Failed to fetch logs:', err);

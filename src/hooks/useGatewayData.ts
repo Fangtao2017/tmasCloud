@@ -1,8 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
-import { getGateways, getDevices, getLatestByDevice } from "../services/api";
-import type { Gateway, Device, LatestPointValue } from "../types/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getGateways, getDevices, getLatestByDevice, getSites } from "../services/api";
+import type { Gateway, Device, LatestPointValue, Site as ApiSite } from "../types/api";
 import type { CloudGateway, CloudSubDevice } from "../data/cloudData";
 import { sites } from "../data/cloudData";
+
+export type { ApiSite };
+
+/** Fetch real sites from the backend; falls back to empty array on error */
+export function useSites(): ApiSite[] {
+  const [apiSites, setApiSites] = useState<ApiSite[]>([]);
+  useEffect(() => {
+    getSites()
+      .then((data) => setApiSites(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
+  return apiSites;
+}
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -47,10 +60,7 @@ function buildSubDevice(
   }, device.last_seen);
 
   const lastMins = minutesAgo(mostRecentTs);
-  // Consider device online if it has data within the last 10 minutes,
-  // OR if the backend already marked it online
-  const isOnline =
-    mapDeviceStatus(device.status) === "online" || lastMins < 10;
+  const isOnline = mapDeviceStatus(device.status) === "online";
 
   return {
     id: String(device.id),
@@ -115,6 +125,9 @@ export function useGatewayData(): GatewayData {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  // Track whether the very first fetch has completed.
+  // Background refreshes (SSE-triggered) must NOT set loading=true to avoid UI flicker.
+  const hasLoadedOnce = useRef(false);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
@@ -122,7 +135,8 @@ export function useGatewayData(): GatewayData {
     let cancelled = false;
 
     async function load() {
-      setLoading(true);
+      // Only show the full-screen spinner on the initial mount.
+      if (!hasLoadedOnce.current) setLoading(true);
       setError(null);
 
       try {
@@ -169,7 +183,10 @@ export function useGatewayData(): GatewayData {
           setError(err instanceof Error ? err.message : "Failed to load data");
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          hasLoadedOnce.current = true;
+          setLoading(false);
+        }
       }
     }
 
@@ -178,6 +195,15 @@ export function useGatewayData(): GatewayData {
       cancelled = true;
     };
   }, [tick]);
+
+  // Subscribe to SSE: re-fetch only when backend pushes a data-change event.
+  // This replaces polling — the UI updates only when real data arrives.
+  useEffect(() => {
+    const es = new EventSource("/api/events/stream", { withCredentials: true });
+    es.onmessage = () => setTick((t) => t + 1);
+    es.onerror = () => {}; // EventSource auto-reconnects; silence the noise
+    return () => es.close();
+  }, []);
 
   return { gateways, pointsByDevice, loading, error, refresh };
 }

@@ -38,7 +38,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useGatewayData, sites } from '../hooks/useGatewayData';
+import { useGatewayData, useSites } from '../hooks/useGatewayData';
 import type { CloudGateway, CloudSubDevice } from '../data/cloudData';
 import './ConfigurationWorkspace.css';
 
@@ -147,6 +147,7 @@ const ConfigurationWorkspace: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { gateways: cloudGateways, loading: gatewaysLoading, error: gatewaysError, refresh } = useGatewayData();
+  const apiSites = useSites();
   const requestedTab = searchParams.get('tab');
   const activeTab: DomainKey = domainOptions.some((item) => item.key === requestedTab)
     ? (requestedTab as DomainKey)
@@ -773,7 +774,7 @@ const ConfigurationWorkspace: React.FC = () => {
               <Select
                 value={selectedSiteId}
                 onChange={setSelectedSiteId}
-                options={[{ value: 'all', label: 'All Sites' }, ...sites.map((site) => ({ value: site.id, label: site.name }))]}
+                options={[{ value: 'all', label: 'All Sites' }, ...apiSites.map((site) => ({ value: String(site.id), label: site.name }))]}
                 style={{ width: '100%' }}
                 size="small"
               />

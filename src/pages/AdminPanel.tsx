@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   Button,
   Card,
@@ -12,10 +11,12 @@ import {
   Select,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
 import {
+  CrownOutlined,
   DeleteOutlined,
   EditOutlined,
   ExclamationCircleOutlined,
@@ -24,27 +25,31 @@ import {
   PlusOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
+  TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useAuth } from '../context/AuthContext';
 import './UserManagement.css';
 
 const { Title, Text } = Typography;
 const { confirm } = Modal;
 const API = import.meta.env.VITE_API_URL || '';
 
+type Role = 'admin' | 'site_admin' | 'operator' | 'viewer';
 type UserStatus = 'active' | 'inactive';
 
-interface ManagedUser {
+interface AdminUser {
   id: number;
   username: string;
   display_name: string;
-  role: string;
+  role: Role;
   status: UserStatus;
   last_login: string | null;
   created_at: string;
+  created_by: number | null;
+  created_by_username: string | null;
+  created_by_display_name: string | null;
   sites: { id: number; name: string }[];
 }
 
@@ -53,18 +58,24 @@ interface Site {
   name: string;
 }
 
-const roleColorMap: Record<string, string> = {
+const roleColorMap: Record<Role, string> = {
+  admin: 'volcano',
+  site_admin: 'purple',
   operator: 'blue',
   viewer: 'green',
 };
 
-const roleLabelMap: Record<string, string> = {
+const roleLabelMap: Record<Role, string> = {
+  admin: 'Admin',
+  site_admin: 'Site Admin',
   operator: 'Operator',
   viewer: 'Viewer',
 };
 
-const rolePermissions: Record<string, string> = {
-  operator: 'Configuration, monitoring, reports, device control',
+const rolePermissions: Record<Role, string> = {
+  admin: 'Full system access — all sites, all users, all configuration',
+  site_admin: 'Full access to assigned sites; can manage own sub-users',
+  operator: 'Configuration, monitoring, reports, device control (no user management)',
   viewer: 'View dashboards and reports — read-only access',
 };
 
@@ -76,26 +87,17 @@ function fmtDate(d: string | null): string {
   });
 }
 
-const UserManagement: React.FC = () => {
-  const { user: authUser } = useAuth();
-  const navigate = useNavigate();
-
-  // Admin users should use AdminPanel instead
-  useEffect(() => {
-    if (authUser?.role === 'admin') {
-      navigate('/admin', { replace: true });
-    }
-  }, [authUser, navigate]);
+const AdminPanel: React.FC = () => {
   const [userForm] = Form.useForm();
   const [pwdForm] = Form.useForm();
   const [siteForm] = Form.useForm();
 
-  const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [allSites, setAllSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [addEditModal, setAddEditModal] = useState(false);
-  const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
+  const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
   const [pwdModal, setPwdModal] = useState(false);
   const [pwdTargetId, setPwdTargetId] = useState<number | null>(null);
   const [siteModal, setSiteModal] = useState(false);
@@ -105,11 +107,6 @@ const UserManagement: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState<string | undefined>(undefined);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
-
-  const availableSites = useMemo(() => {
-    if (!authUser?.siteIds) return allSites;
-    return allSites.filter((s) => authUser.siteIds!.includes(s.id));
-  }, [allSites, authUser]);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -142,7 +139,10 @@ const UserManagement: React.FC = () => {
   const filteredUsers = useMemo(() => {
     const q = searchText.toLowerCase();
     return users.filter((u) => {
-      const matchSearch = !q || u.display_name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q);
+      const matchSearch = !q ||
+        u.display_name.toLowerCase().includes(q) ||
+        u.username.toLowerCase().includes(q) ||
+        (u.created_by_username ?? '').toLowerCase().includes(q);
       const matchRole = !roleFilter || u.role === roleFilter;
       const matchStatus = !statusFilter || u.status === statusFilter;
       return matchSearch && matchRole && matchStatus;
@@ -150,25 +150,27 @@ const UserManagement: React.FC = () => {
   }, [users, searchText, roleFilter, statusFilter]);
 
   const roleCounts = useMemo(() => {
-    const c: Record<string, number> = { operator: 0, viewer: 0 };
+    const c: Record<string, number> = { admin: 0, site_admin: 0, operator: 0, viewer: 0 };
     users.forEach((u) => { if (u.role in c) c[u.role]++; });
     return c;
   }, [users]);
 
+  // ── Add / Edit user ──────────────────────────────────────────────────────
   const handleAdd = () => {
     setEditingUser(null);
     userForm.resetFields();
-    userForm.setFieldsValue({ role: 'operator' });
+    userForm.setFieldsValue({ role: 'site_admin', siteIds: [] });
     setAddEditModal(true);
   };
 
-  const handleEdit = (record: ManagedUser) => {
+  const handleEdit = (record: AdminUser) => {
     setEditingUser(record);
     userForm.setFieldsValue({
       displayName: record.display_name,
       username: record.username,
       role: record.role,
       status: record.status,
+      siteIds: record.sites.map((s) => s.id),
     });
     setAddEditModal(true);
   };
@@ -177,6 +179,7 @@ const UserManagement: React.FC = () => {
     try {
       const values = await userForm.validateFields();
       setSaving(true);
+      const siteIds: number[] = values.role === 'admin' ? [] : (values.siteIds ?? []);
       if (editingUser) {
         const res = await fetch(`${API}/api/users/${editingUser.id}`, {
           method: 'PATCH', credentials: 'include',
@@ -185,6 +188,13 @@ const UserManagement: React.FC = () => {
         });
         const body = await res.json();
         if (!res.ok) throw new Error(body.message);
+        if (values.role !== 'admin') {
+          await fetch(`${API}/api/users/${editingUser.id}/sites`, {
+            method: 'PUT', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ siteIds }),
+          });
+        }
         message.success('User updated');
       } else {
         const res = await fetch(`${API}/api/users`, {
@@ -192,7 +202,7 @@ const UserManagement: React.FC = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             username: values.username, password: values.password,
-            displayName: values.displayName, role: values.role, siteIds: [],
+            displayName: values.displayName, role: values.role, siteIds,
           }),
         });
         const body = await res.json();
@@ -208,7 +218,8 @@ const UserManagement: React.FC = () => {
     }
   };
 
-  const handleDeactivate = (record: ManagedUser) => {
+  // ── Deactivate ───────────────────────────────────────────────────────────
+  const handleDeactivate = (record: AdminUser) => {
     confirm({
       title: 'Deactivate User',
       icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
@@ -228,6 +239,7 @@ const UserManagement: React.FC = () => {
     });
   };
 
+  // ── Reset password ───────────────────────────────────────────────────────
   const openPwdModal = (id: number) => {
     setPwdTargetId(id);
     pwdForm.resetFields();
@@ -254,7 +266,8 @@ const UserManagement: React.FC = () => {
     }
   };
 
-  const openSiteModal = (record: ManagedUser) => {
+  // ── Assign sites ─────────────────────────────────────────────────────────
+  const openSiteModal = (record: AdminUser) => {
     setSiteTargetId(record.id);
     siteForm.setFieldsValue({ siteIds: record.sites.map((s) => s.id) });
     setSiteModal(true);
@@ -281,7 +294,8 @@ const UserManagement: React.FC = () => {
     }
   };
 
-  const columns: ColumnsType<ManagedUser> = [
+  // ── Table columns ────────────────────────────────────────────────────────
+  const columns: ColumnsType<AdminUser> = [
     {
       title: 'User', key: 'user',
       render: (_, record) => (
@@ -298,14 +312,14 @@ const UserManagement: React.FC = () => {
     },
     {
       title: 'Role', dataIndex: 'role', key: 'role', width: 110,
-      render: (role: string) => (
-        <Tag color={roleColorMap[role] ?? 'default'} style={{ width: 80, textAlign: 'center', margin: 0, fontWeight: 500 }}>
+      render: (role: Role) => (
+        <Tag color={roleColorMap[role] ?? 'default'} style={{ width: 90, textAlign: 'center', margin: 0, fontWeight: 500 }}>
           {roleLabelMap[role] ?? role}
         </Tag>
       ),
     },
     {
-      title: 'Status', dataIndex: 'status', key: 'status', width: 100,
+      title: 'Status', dataIndex: 'status', key: 'status', width: 90,
       render: (status: string) => (
         <Tag color={status === 'active' ? 'green' : 'default'} style={{ margin: 0, textTransform: 'capitalize' }}>
           {status}
@@ -313,27 +327,54 @@ const UserManagement: React.FC = () => {
       ),
     },
     {
-      title: 'Sites', key: 'sites',
+      title: 'Sites', key: 'sites', width: 90,
       render: (_, record) => {
-        const inner = record.sites.length === 0
-          ? <Text type="secondary" style={{ fontSize: 12 }}>None assigned</Text>
-          : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {record.sites.map((s) => <Tag key={s.id} style={{ margin: 0, fontSize: 11 }}>{s.name}</Tag>)}
-            </div>;
+        const isAdmin = record.role === 'admin';
+        const siteList = isAdmin ? allSites : record.sites;
+        const count = siteList.length;
+        const tooltipContent = (
+          <div style={{ minWidth: 140 }}>
+            {isAdmin && <div style={{ fontWeight: 600, marginBottom: 4, color: '#faad14' }}>All Sites</div>}
+            {count === 0
+              ? <span style={{ color: '#999' }}>No sites assigned</span>
+              : siteList.map((s) => <div key={s.id} style={{ lineHeight: '20px' }}>{s.name}</div>)
+            }
+          </div>
+        );
+        const tagColor = isAdmin ? 'gold' : count === 0 ? 'default' : 'blue';
+        const label = isAdmin ? `${count} (All)` : String(count);
         return (
-          <div
-            style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
-            onClick={() => openSiteModal(record)}
-            title="Click to assign sites"
-          >
-            {inner}
-            <EditOutlined style={{ fontSize: 11, color: '#1677ff' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Tooltip title={tooltipContent} placement="right">
+              <Tag color={tagColor} style={{ margin: 0, cursor: 'default', minWidth: 36, textAlign: 'center' }}>
+                {label}
+              </Tag>
+            </Tooltip>
+            {!isAdmin && (
+              <EditOutlined
+                style={{ fontSize: 11, color: '#1677ff', cursor: 'pointer', flexShrink: 0 }}
+                onClick={() => openSiteModal(record)}
+              />
+            )}
           </div>
         );
       },
     },
     {
-      title: 'Last Login', dataIndex: 'last_login', key: 'last_login', width: 160,
+      title: 'Managed By', key: 'managed_by',
+      render: (_, record) => {
+        if (!record.created_by) return <Text type="secondary" style={{ fontSize: 12 }}>—</Text>;
+        return (
+          <Text style={{ fontSize: 12 }}>
+            {record.created_by_display_name || record.created_by_username}
+            <br />
+            <Text type="secondary" style={{ fontSize: 11 }}>@{record.created_by_username}</Text>
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'Last Login', dataIndex: 'last_login', key: 'last_login', width: 150,
       render: (v: string | null) => <Text type="secondary" style={{ fontSize: 12 }}>{fmtDate(v)}</Text>,
     },
     {
@@ -341,12 +382,13 @@ const UserManagement: React.FC = () => {
       render: (_, record) => {
         const items: MenuProps['items'] = [
           { key: 'edit', label: 'Edit User', icon: <EditOutlined />, onClick: () => handleEdit(record) },
-          { key: 'sites', label: 'Assign Sites', icon: <SafetyCertificateOutlined />, onClick: () => openSiteModal(record) },
+          { key: 'sites', label: 'Assign Sites', icon: <SafetyCertificateOutlined />, onClick: () => openSiteModal(record), disabled: record.role === 'admin' },
           { key: 'reset', label: 'Reset Password', icon: <KeyOutlined />, onClick: () => openPwdModal(record.id) },
           { type: 'divider' },
           {
             key: 'deactivate', label: record.status === 'active' ? 'Deactivate' : 'Already Inactive',
-            icon: <DeleteOutlined />, danger: true, disabled: record.status === 'inactive',
+            icon: <DeleteOutlined />, danger: true,
+            disabled: record.status === 'inactive' || record.role === 'admin',
             onClick: () => handleDeactivate(record),
           },
         ];
@@ -359,17 +401,24 @@ const UserManagement: React.FC = () => {
     },
   ];
 
+  const roleSummary = [
+    { role: 'admin' as Role, color: '#cf1322', bg: '#fff1f0', icon: <CrownOutlined />, desc: 'Internal superusers' },
+    { role: 'site_admin' as Role, color: '#531dab', bg: '#f9f0ff', icon: <TeamOutlined />, desc: 'Customer admins' },
+    { role: 'operator' as Role, color: '#1677ff', bg: '#e6f4ff', icon: '⚙️', desc: 'Configure & monitor' },
+    { role: 'viewer' as Role, color: '#52c41a', bg: '#f6ffed', icon: '👁', desc: 'Read-only access' },
+  ];
+
   return (
     <div className="user-management">
       <div className="user-management__container">
+        {/* Role summary cards */}
         <Row gutter={16} className="user-management__role-summary">
-          {[
-            { role: 'operator', color: '#1677ff', bg: '#e6f4ff', icon: '⚙️', desc: 'Configure & monitor' },
-            { role: 'viewer', color: '#52c41a', bg: '#f6ffed', icon: '👁', desc: 'Read-only access' },
-          ].map(({ role, color, bg, icon, desc }) => (
-            <Col xs={12} key={role}>
+          {roleSummary.map(({ role, color, bg, icon, desc }) => (
+            <Col xs={12} sm={6} key={role}>
               <div className="user-management__role-card" style={{ borderLeftColor: color }}>
-                <div className="user-management__role-icon" style={{ background: bg }}>{icon}</div>
+                <div className="user-management__role-icon" style={{ background: bg, color }}>
+                  {icon}
+                </div>
                 <div className="user-management__role-info">
                   <span className="user-management__role-count">{roleCounts[role] ?? 0}</span>
                   <Text type="secondary" style={{ fontSize: 12 }}>{roleLabelMap[role]}</Text>
@@ -382,12 +431,13 @@ const UserManagement: React.FC = () => {
           ))}
         </Row>
 
+        {/* Main table */}
         <Card bordered={false} className="user-management__table-card">
           <div className="user-management__header">
             <Row justify="space-between" align="middle" gutter={[16, 16]}>
               <Col>
-                <Title level={4} style={{ margin: '0 0 4px 0', color: '#001B34' }}>User Accounts</Title>
-                <Text type="secondary">{users.length} users</Text>
+                <Title level={4} style={{ margin: '0 0 4px 0', color: '#001B34' }}>All User Accounts</Title>
+                <Text type="secondary">{users.length} total users across {Object.values(roleCounts).filter((c) => c > 0).length} roles</Text>
               </Col>
               <Col>
                 <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>Add User</Button>
@@ -395,14 +445,19 @@ const UserManagement: React.FC = () => {
             </Row>
             <div className="user-management__filters">
               <Input
-                placeholder="Search by name or username"
+                placeholder="Search by name, username or manager"
                 prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
                 className="user-management__search"
                 allowClear
                 onChange={(e) => setSearchText(e.target.value)}
               />
               <Select placeholder="Role" className="user-management__filter-select" allowClear onChange={setRoleFilter}
-                options={[{ value: 'operator', label: 'Operator' }, { value: 'viewer', label: 'Viewer' }]}
+                options={[
+                  { value: 'admin', label: 'Admin' },
+                  { value: 'site_admin', label: 'Site Admin' },
+                  { value: 'operator', label: 'Operator' },
+                  { value: 'viewer', label: 'Viewer' },
+                ]}
               />
               <Select placeholder="Status" className="user-management__filter-select" allowClear onChange={setStatusFilter}
                 options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }]}
@@ -410,14 +465,15 @@ const UserManagement: React.FC = () => {
             </div>
           </div>
           <Table columns={columns} dataSource={filteredUsers} rowKey="id" loading={loading}
-            pagination={{ pageSize: 10, showTotal: (t) => `Total ${t} users`, showSizeChanger: false }}
+            pagination={{ pageSize: 15, showTotal: (t) => `Total ${t} users`, showSizeChanger: false }}
           />
         </Card>
       </div>
 
+      {/* Add / Edit Modal */}
       <Modal title={editingUser ? 'Edit User' : 'Add User'} open={addEditModal}
         onOk={handleSaveUser} onCancel={() => setAddEditModal(false)}
-        okText="Save" cancelText="Cancel" confirmLoading={saving} centered width={480} destroyOnClose>
+        okText="Save" cancelText="Cancel" confirmLoading={saving} centered width={520} destroyOnClose>
         <Form form={userForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="displayName" label="Display Name" rules={[{ required: true, message: 'Required' }]}>
             <Input prefix={<UserOutlined />} placeholder="Full name" />
@@ -439,8 +495,18 @@ const UserManagement: React.FC = () => {
           )}
           <Form.Item name="role" label="Role" rules={[{ required: true, message: 'Required' }]}>
             <Select>
-              <Select.Option value="operator">Operator</Select.Option>
-              <Select.Option value="viewer">Viewer</Select.Option>
+              <Select.Option value="admin">
+                <Tag color="volcano" style={{ marginRight: 6 }}>Admin</Tag>Internal superuser
+              </Select.Option>
+              <Select.Option value="site_admin">
+                <Tag color="purple" style={{ marginRight: 6 }}>Site Admin</Tag>Customer administrator
+              </Select.Option>
+              <Select.Option value="operator">
+                <Tag color="blue" style={{ marginRight: 6 }}>Operator</Tag>Configure &amp; monitor
+              </Select.Option>
+              <Select.Option value="viewer">
+                <Tag color="green" style={{ marginRight: 6 }}>Viewer</Tag>Read-only access
+              </Select.Option>
             </Select>
           </Form.Item>
           {editingUser && (
@@ -453,20 +519,39 @@ const UserManagement: React.FC = () => {
           )}
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.role !== cur.role}>
             {({ getFieldValue }) => {
-              const role = getFieldValue('role') as string | undefined;
-              if (!role || !rolePermissions[role]) return null;
+              const role = getFieldValue('role') as Role | undefined;
+              if (!role) return null;
               return (
                 <div className="user-management__role-hint">
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    <strong>{roleLabelMap[role] ?? role}:</strong> {rolePermissions[role]}
+                    <strong>{roleLabelMap[role]}:</strong> {rolePermissions[role]}
                   </Text>
                 </div>
+              );
+            }}
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.role !== cur.role}>
+            {({ getFieldValue }) => {
+              const role = getFieldValue('role') as Role | undefined;
+              if (role === 'admin' || !role) return null;
+              return (
+                <Form.Item name="siteIds" label="Site Access" style={{ marginTop: 16, marginBottom: 0 }}>
+                  <Select
+                    mode="multiple"
+                    maxTagCount="responsive"
+                    placeholder="Select sites…"
+                    listHeight={200}
+                    options={allSites.map((s) => ({ value: s.id, label: s.name }))}
+                    notFoundContent={<span style={{ fontSize: 12, color: '#8c8c8c' }}>No sites configured — add sites first</span>}
+                  />
+                </Form.Item>
               );
             }}
           </Form.Item>
         </Form>
       </Modal>
 
+      {/* Reset Password Modal */}
       <Modal title="Reset Password" open={pwdModal} onOk={handleResetPwd} onCancel={() => setPwdModal(false)}
         okText="Reset" cancelText="Cancel" confirmLoading={saving} centered width={420} destroyOnClose>
         <Form form={pwdForm} layout="vertical" style={{ marginTop: 16 }}>
@@ -489,13 +574,18 @@ const UserManagement: React.FC = () => {
         </Form>
       </Modal>
 
+      {/* Assign Sites Modal */}
       <Modal title="Assign Sites" open={siteModal} onOk={handleSaveSites} onCancel={() => setSiteModal(false)}
-        okText="Save" cancelText="Cancel" confirmLoading={saving} centered width={420} destroyOnClose>
+        okText="Save" cancelText="Cancel" confirmLoading={saving} centered width={460} destroyOnClose>
         <Form form={siteForm} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="siteIds" label="Sites">
-            <Select mode="multiple" placeholder="Select sites to assign"
-              options={availableSites.map((s) => ({ value: s.id, label: s.name }))}
-              style={{ width: '100%' }}
+          <Form.Item name="siteIds" label="Assigned Sites">
+            <Select
+              mode="multiple"
+              maxTagCount="responsive"
+              placeholder="Select sites…"
+              listHeight={220}
+              options={allSites.map((s) => ({ value: s.id, label: s.name }))}
+              notFoundContent={<span style={{ fontSize: 12, color: '#8c8c8c' }}>No sites configured — add sites first</span>}
             />
           </Form.Item>
         </Form>
@@ -504,4 +594,4 @@ const UserManagement: React.FC = () => {
   );
 };
 
-export default UserManagement;
+export default AdminPanel;

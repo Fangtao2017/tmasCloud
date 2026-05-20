@@ -1,55 +1,72 @@
 /* eslint-disable react-refresh/only-export-components */
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
+
+const API = import.meta.env.VITE_API_URL || '';
 
 export interface AuthUser {
     id: number;
     username: string;
-    displayName?: string;
-    email?: string;
-    lastLoginAt?: string;
+    displayName: string;
+    role: 'admin' | 'site_admin' | 'operator' | 'viewer';
+    siteIds: number[] | null; // null = admin (all sites)
 }
 
 interface AuthContextType {
     user: AuthUser | null;
-    token: string | null;
     role: string | null;
-    permissions: string[];
     isAuthenticated: boolean;
     isLoading: boolean;
-    login: (username: string, _password: string) => Promise<void>;
-    logout: () => void;
-    refreshUser: () => Promise<void>;
-    hasPermission: (_permission: string) => boolean;
+    login: (username: string, password: string) => Promise<void>;
+    logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [user, setUser] = useState<AuthUser | null>({ id: 1, username: 'cloud-admin', displayName: 'Cloud Admin' });
+    const [user, setUser] = useState<AuthUser | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
 
-    const value = useMemo<AuthContextType>(() => {
-        const token = 'local-mode-token';
-        return {
+    // On mount: check if a valid session cookie already exists
+    useEffect(() => {
+        fetch(`${API}/auth/me`, { credentials: 'include' })
+            .then((r) => (r.ok ? r.json() : Promise.reject()))
+            .then(({ user: u }) => setUser(u))
+            .catch(() => setUser(null))
+            .finally(() => setIsLoading(false));
+    }, []);
+
+    const login = async (username: string, password: string) => {
+        const res = await fetch(`${API}/auth/login`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.message || 'Login failed');
+        }
+        const { user: u } = await res.json();
+        setUser(u);
+    };
+
+    const logout = async () => {
+        await fetch(`${API}/auth/logout`, { method: 'POST', credentials: 'include' });
+        setUser(null);
+    };
+
+    return (
+        <AuthContext.Provider value={{
             user,
-            token,
-            role: 'admin',
-            permissions: [],
-            isAuthenticated: true,
-            isLoading: false,
-            login: async (username: string) => {
-                setUser({ id: 1, username, displayName: username });
-            },
-            logout: () => {
-                setUser(null);
-            },
-            refreshUser: async () => {
-                return;
-            },
-            hasPermission: () => true
-        };
-    }, [user]);
-
-    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+            role: user?.role ?? null,
+            isAuthenticated: !!user,
+            isLoading,
+            login,
+            logout,
+        }}>
+            {children}
+        </AuthContext.Provider>
+    );
 };
 
 export const useAuth = (): AuthContextType => {
