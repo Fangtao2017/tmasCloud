@@ -1,0 +1,23 @@
+/* Custom Select component styles with TCAM green color */
+.ant-select:not(.ant-select-disabled):hover .ant-select-selector {
+  border-color: #8CC63F !important;
+}
+
+.ant-select-focused:not(.ant-select-disabled).ant-select:not(.ant-select-customize-input) .ant-select-selector {
+  border-color: #8CC63F !important;
+  box-shadow: 0 0 0 2px rgba(140, 198, 63, 0.2) !important;
+}
+
+.ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background-color: rgba(140, 198, 63, 0.1) !important;
+}
+
+.ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+  background-color: rgba(140, 198, 63, 0.05) !important;
+}
+
+/* Compact table header for Sensor List */
+.sensor-list-table .ant-table-thead > tr > th {
+  padding-top: 4px !important;
+  padding-bottom: 4px !important;
+}

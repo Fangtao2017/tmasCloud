@@ -1,0 +1,16 @@
+{
+  "name": "tmascloud-handover",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install:frontend": "npm ci --prefix frontend",
+    "install:backend": "npm ci --prefix backend",
+    "install:all": "npm run install:frontend && npm run install:backend",
+    "dev": "npm run dev --prefix frontend",
+    "lint": "npm run lint --prefix frontend",
+    "build": "npm run build --prefix frontend",
+    "package:backend": "node scripts/package-backend.mjs",
+    "start": "npm start --prefix backend",
+    "preview": "npm run preview --prefix frontend"
+  }
+}

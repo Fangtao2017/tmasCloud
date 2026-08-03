@@ -1,0 +1,316 @@
+.logs-center-page {
+  color: #0f172a;
+}
+
+.logs-view-switcher {
+  margin-bottom: 0;
+}
+
+/* Sub-view tab switcher (Overview / Log List) */
+.logs-subview-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 16px;
+  background: rgba(15, 23, 42, 0.03);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  margin-bottom: 12px;
+}
+
+.logs-subview-tab {
+  padding: 4px 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  background: transparent;
+  color: #475569;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.logs-subview-tab:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.logs-subview-tab-active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+  font-weight: 500;
+}
+
+.logs-summary-grid {
+  margin-bottom: 8px;
+}
+
+/* ── Unified list toolbar (stat pills + action buttons in one row) ── */
+.logs-list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.logs-gateway-select {
+  min-width: 160px;
+  max-width: 260px;
+  flex-shrink: 0;
+}
+
+.logs-list-toolbar-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.logs-list-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Sticky pagination bar at bottom of list card */
+.logs-list-pagination {
+  position: sticky;
+  bottom: 0;
+  background: #fff;
+  padding: 10px 0 4px;
+  border-top: 1px solid #f1f5f9;
+  display: flex;
+  justify-content: flex-end;
+  z-index: 10;
+}
+
+.logs-stat-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 14px;
+  border-radius: 8px;
+  border: 1px solid;
+  min-width: 64px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  user-select: none;
+}
+
+.logs-stat-pill:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
+}
+
+.logs-stat-pill-active {
+  box-shadow: 0 0 0 2px currentColor inset, 0 4px 12px rgba(0, 0, 0, 0.10);
+  transform: translateY(-1px);
+}
+
+.logs-stat-pill-value {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.logs-stat-pill-label {
+  font-size: 10px;
+  color: #64748b;
+  margin-top: 1px;
+  white-space: nowrap;
+}
+
+/* ── Left-right split layout for list view (kept for future use) ── */
+.logs-list-layout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-top: 4px;
+}
+
+.logs-list-main {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.logs-summary-card.ant-card {
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.logs-card-clickable.ant-card:hover {
+  border-color: #93c5fd !important;
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.18) !important;
+  transform: translateY(-2px);
+}
+
+.logs-summary-card .ant-card-body {
+  padding: 8px 10px;
+}
+
+.logs-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.logs-summary-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #eef2ff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #1e3a8a;
+}
+
+.logs-summary-label {
+  color: #526072;
+  font-size: 11px;
+}
+
+.logs-summary-value {
+  font-size: 20px;
+  line-height: 1.1;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.logs-summary-trend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.logs-mini-sparkline {
+  height: 18px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1;
+  max-width: 68px;
+}
+
+.logs-mini-sparkline span {
+  width: 4px;
+  border-radius: 2px;
+}
+
+.logs-list-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logs-filter-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.logs-filter-header .ant-typography {
+  margin-bottom: 0;
+}
+
+.logs-filter-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.logs-chip-row {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.logs-row-critical td {
+  background: rgba(220, 38, 38, 0.06) !important;
+}
+
+.logs-json-block {
+  margin: 0;
+  background: #0f172a;
+  color: #cbd5e1;
+  padding: 10px;
+  border-radius: 8px;
+  max-height: 200px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+/* ── Filter drawer sections ── */
+.lf-section {
+  margin-bottom: 4px;
+}
+
+.lf-divider.ant-divider {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.lf-label {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.lf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lf-chips .ant-tag-checkable {
+  border: 1px solid #d1d5db;
+  border-radius: 20px;
+  padding: 2px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.lf-chips .ant-tag-checkable-checked {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+@media (max-width: 1399px) {
+  .logs-filter-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .logs-filter-row {
+    grid-template-columns: 1fr;
+  }
+
+  .logs-summary-value {
+    font-size: 18px;
+  }
+
+  .logs-list-header-right {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
